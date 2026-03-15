@@ -4,11 +4,9 @@ import {
   MATTHEW_PROVIDER_ID,
   MATTHEW_API_BASE,
   MATTHEW_CLIENT_ID,
+  MATTHEW_REDIRECT_URI,
 } from "./constants.js";
-import {
-  authorizeMicrosoft,
-  exchangeViaMatthew,
-} from "./oauth/microsoft.js";
+import { authorizeMicrosoft } from "./oauth/microsoft.js";
 import {
   loadAccounts,
   saveAccounts,
@@ -144,41 +142,30 @@ export const MatthewOAuthPlugin: Plugin = async () => {
       methods: [
         {
           type: "oauth" as const,
-          label: "Login with CMU Account (Microsoft SSO)",
+          label: "Login with CMU Account (Matthew AI)",
 
           async authorize() {
-            const { url } = authorizeMicrosoft(clientId);
-
-            openBrowser(url);
+            openBrowser(MATTHEW_REDIRECT_URI);
 
             return {
-              url,
+              url: MATTHEW_REDIRECT_URI,
               instructions:
-                "Login with your CMU Account via Microsoft SSO.\n" +
-                "After login, you'll be redirected to matthew.cmu.ac.th.\n" +
-                "Copy the 'code' parameter from the URL and paste it here.",
+                "1. Login to matthew.cmu.ac.th with your CMU Account\n" +
+                "2. After login, open browser console (F12 → Console)\n" +
+                "3. Run: JSON.parse(localStorage.getItem('user')).access_token\n" +
+                "4. Copy the token and paste it here",
               method: "code" as const,
 
-              async callback(codeInput: string) {
+              async callback(tokenInput: string) {
                 try {
-                  let code = codeInput.trim();
+                  let token = tokenInput.trim();
 
-                  if (code.startsWith("http")) {
-                    const parsedUrl = new URL(code);
-                    code = parsedUrl.searchParams.get("code") || code;
-                  }
-
-                  if (!code) {
+                  if (!token) {
                     return { type: "failed" as const };
                   }
 
-                  const result = await exchangeViaMatthew(code);
-
-                  if (result.type === "failed") {
-                    console.error(
-                      `[matthew] Token exchange failed: ${result.error}`,
-                    );
-                    return { type: "failed" as const };
+                  if (token.startsWith('"') && token.endsWith('"')) {
+                    token = token.slice(1, -1);
                   }
 
                   const storage = (await loadAccounts()) ?? {
@@ -188,7 +175,7 @@ export const MatthewOAuthPlugin: Plugin = async () => {
                   };
 
                   const account = {
-                    accessToken: result.accessToken,
+                    accessToken: token,
                     addedAt: Date.now(),
                     lastUsed: Date.now(),
                   };
@@ -199,12 +186,12 @@ export const MatthewOAuthPlugin: Plugin = async () => {
 
                   return {
                     type: "success" as const,
-                    refresh: result.accessToken,
-                    access: result.accessToken,
+                    refresh: token,
+                    access: token,
                     expires: Date.now() + 3600 * 1000,
                   };
                 } catch (err) {
-                  console.error("[matthew] OAuth error:", err);
+                  console.error("[matthew] Auth error:", err);
                   return { type: "failed" as const };
                 }
               },
