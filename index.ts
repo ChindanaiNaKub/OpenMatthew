@@ -1,6 +1,9 @@
 export { MatthewOAuthPlugin } from "./src/plugin.js";
-export { authorizeCmu, exchangeCmu } from "./src/oauth/cmu.js";
+export {
+  authorizeMicrosoft,
+  exchangeViaMatthew,
+} from "./src/oauth/microsoft.js";
 export type {
-  CmuAuthorization,
-  CmuTokenExchangeResult,
-} from "./src/oauth/cmu.js";
+  MicrosoftAuthorization,
+  TokenExchangeResult,
+} from "./src/oauth/microsoft.js";

@@ -3,14 +3,15 @@ import type { Plugin, Hooks } from "@opencode-ai/plugin";
 import {
   MATTHEW_PROVIDER_ID,
   MATTHEW_API_BASE,
-  OAUTH_REDIRECT_URI,
+  MATTHEW_CLIENT_ID,
 } from "./constants.js";
-import { authorizeCmu, exchangeCmu } from "./oauth/cmu.js";
-import { startOAuthListener } from "./plugin/server.js";
+import {
+  authorizeMicrosoft,
+  exchangeViaMatthew,
+} from "./oauth/microsoft.js";
 import {
   loadAccounts,
   saveAccounts,
-  type AccountStorage,
 } from "./plugin/storage.js";
 
 const MATTHEW_MODELS = {
@@ -34,28 +35,6 @@ const MATTHEW_MODELS = {
   },
 } as const;
 
-function getClientId(): string {
-  const id = process.env.CMU_OAUTH_CLIENT_ID;
-  if (!id) {
-    throw new Error(
-      "CMU_OAUTH_CLIENT_ID environment variable is required. " +
-        "Register your app at https://oauth.cmu.ac.th to obtain one.",
-    );
-  }
-  return id;
-}
-
-function getClientSecret(): string {
-  const secret = process.env.CMU_OAUTH_CLIENT_SECRET;
-  if (!secret) {
-    throw new Error(
-      "CMU_OAUTH_CLIENT_SECRET environment variable is required. " +
-        "Register your app at https://oauth.cmu.ac.th to obtain one.",
-    );
-  }
-  return secret;
-}
-
 function openBrowser(url: string): void {
   const cmd =
     process.platform === "darwin"
@@ -69,12 +48,14 @@ function openBrowser(url: string): void {
 /**
  * Main OpenCode plugin for CMU Matthew AI authentication.
  *
- * Provides OAuth-based login with CMU accounts and routes
- * LLM requests through the Matthew AI platform.
+ * Uses Microsoft Azure AD (CMU tenant) SSO via the Matthew web app's
+ * login flow, then proxies LLM requests through the Matthew AI platform.
  */
 export const MatthewOAuthPlugin: Plugin = async () => {
   const matthewApiBase =
     process.env.MATTHEW_API_BASE || MATTHEW_API_BASE;
+  const clientId =
+    process.env.MATTHEW_OAUTH_CLIENT_ID || MATTHEW_CLIENT_ID;
 
   return {
     async config(config) {
@@ -124,10 +105,7 @@ export const MatthewOAuthPlugin: Plugin = async () => {
           const headers = new Headers(request.headers);
           headers.set("Authorization", `Bearer ${accessToken}`);
 
-          return fetch(
-            new Request(request, { headers }),
-            init,
-          );
+          return fetch(new Request(request, { headers }), init);
         };
 
         return {
@@ -139,38 +117,40 @@ export const MatthewOAuthPlugin: Plugin = async () => {
       methods: [
         {
           type: "oauth" as const,
-          label: "Login with CMU Account",
+          label: "Login with CMU Account (Microsoft SSO)",
 
           async authorize() {
-            const clientId = getClientId();
-            const { url, state } = authorizeCmu(clientId);
-
-            const listener = await startOAuthListener();
+            const { url } = authorizeMicrosoft(clientId);
 
             openBrowser(url);
 
             return {
               url,
               instructions:
-                "Login with your CMU Account (@cmu.ac.th) to access Matthew AI.",
-              method: "auto" as const,
+                "Login with your CMU Account via Microsoft SSO.\n" +
+                "After login, you'll be redirected to matthew.cmu.ac.th.\n" +
+                "Copy the 'code' parameter from the URL and paste it here.",
+              method: "code" as const,
 
-              async callback() {
+              async callback(codeInput: string) {
                 try {
-                  const callbackUrl = await listener.waitForCallback();
-                  const code = callbackUrl.searchParams.get("code");
+                  let code = codeInput.trim();
+
+                  if (code.startsWith("http")) {
+                    const parsedUrl = new URL(code);
+                    code = parsedUrl.searchParams.get("code") || code;
+                  }
 
                   if (!code) {
                     return { type: "failed" as const };
                   }
 
-                  const result = await exchangeCmu(
-                    code,
-                    getClientId(),
-                    getClientSecret(),
-                  );
+                  const result = await exchangeViaMatthew(code);
 
                   if (result.type === "failed") {
+                    console.error(
+                      `[matthew] Token exchange failed: ${result.error}`,
+                    );
                     return { type: "failed" as const };
                   }
 
@@ -180,27 +160,14 @@ export const MatthewOAuthPlugin: Plugin = async () => {
                     activeIndex: 0,
                   };
 
-                  const existingIdx = storage.accounts.findIndex(
-                    (a) => a.email === result.email,
-                  );
-
                   const account = {
-                    email: result.email,
-                    firstName: result.firstName,
-                    lastName: result.lastName,
                     accessToken: result.accessToken,
                     addedAt: Date.now(),
                     lastUsed: Date.now(),
                   };
 
-                  if (existingIdx >= 0) {
-                    storage.accounts[existingIdx] = account;
-                    storage.activeIndex = existingIdx;
-                  } else {
-                    storage.accounts.push(account);
-                    storage.activeIndex = storage.accounts.length - 1;
-                  }
-
+                  storage.accounts.push(account);
+                  storage.activeIndex = storage.accounts.length - 1;
                   await saveAccounts(storage);
 
                   return {
@@ -209,10 +176,9 @@ export const MatthewOAuthPlugin: Plugin = async () => {
                     access: result.accessToken,
                     expires: Date.now() + 3600 * 1000,
                   };
-                } catch {
+                } catch (err) {
+                  console.error("[matthew] OAuth error:", err);
                   return { type: "failed" as const };
-                } finally {
-                  await listener.close().catch(() => {});
                 }
               },
             };
