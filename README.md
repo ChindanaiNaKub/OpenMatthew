@@ -1,10 +1,10 @@
 # OpenMatthew
 
-OpenCode plugin for CMU Matthew AI authentication — access GPT-4o using your Chiang Mai University credentials.
+OpenCode plugin for CMU Matthew AI authentication — access GPT-5.2, GPT-4.1 and more using your Chiang Mai University credentials.
 
 ## What is this?
 
-This is an [OpenCode](https://opencode.ai) plugin that enables authentication against [Matthew AI](https://matthew.cmu.ac.th), Chiang Mai University's generative AI platform. It allows you to use Matthew's AI models (GPT-4o, GPT-4o-mini) directly from OpenCode using your CMU account.
+This is an [OpenCode](https://opencode.ai) plugin that enables authentication against [Matthew AI](https://matthew.cmu.ac.th), Chiang Mai University's generative AI platform. It allows you to use Matthew's AI models (GPT-5.2, GPT-5 Mini, GPT-4.1, GPT-4o, GPT-4o Mini) directly from OpenCode using your CMU account.
 
 Inspired by [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth).
 
@@ -26,6 +26,9 @@ Add the plugin to your `opencode.json`:
     "matthew": {
       "name": "CMU Matthew AI",
       "models": {
+        "gpt-5.2": { "name": "GPT-5.2" },
+        "gpt-5-mini": { "name": "GPT-5 Mini" },
+        "gpt-4.1": { "name": "GPT-4.1" },
         "gpt-4o": { "name": "GPT-4o" },
         "gpt-4o-mini": { "name": "GPT-4o Mini" }
       }
@@ -42,7 +45,7 @@ Add the plugin to your `opencode.json`:
 3. Your browser will open the Microsoft SSO login page (CMU tenant)
 4. Authenticate with your CMU Account
 5. After login, you'll be redirected to matthew.cmu.ac.th — copy the `code` parameter from the URL and paste it into OpenCode
-6. Select a Matthew AI model (e.g., `matthew/gpt-4o`) and start coding
+6. Select a Matthew AI model (e.g., `matthew/gpt-5.2`) and start coding
 
 ## How it works
 
@@ -81,6 +84,9 @@ User → opencode auth login
 
 | Model | Description |
 |-------|-------------|
+| `matthew/gpt-5.2` | GPT-5.2 — newest reasoning model for complex tasks |
+| `matthew/gpt-5-mini` | GPT-5 Mini — reasoning small model for everyday tasks |
+| `matthew/gpt-4.1` | GPT-4.1 — smartest non-reasoning model |
 | `matthew/gpt-4o` | GPT-4o — high performance, supports images and tool calls |
 | `matthew/gpt-4o-mini` | GPT-4o Mini — lighter model, lower token usage |
 
