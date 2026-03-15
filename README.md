@@ -99,10 +99,13 @@ opencode run "Hello" --model=matthew/gpt-5.2
 ## Usage
 
 1. Start OpenCode
-2. Run `opencode auth login` and select **"Login with CMU Account (Microsoft SSO)"**
-3. Your browser will open the Microsoft SSO login page (CMU tenant)
-4. Authenticate with your CMU Account
-5. After login, you'll be redirected to matthew.cmu.ac.th — copy the `code` parameter from the URL and paste it into OpenCode
+2. Run `opencode auth login` and select **"Login with CMU Account (Matthew AI)"**
+3. Your browser will open matthew.cmu.ac.th — login with your CMU Account
+4. After login, open the browser console (`F12` → Console) and run:
+   ```js
+   JSON.parse(localStorage.getItem('user')).access_token
+   ```
+5. Copy the token and paste it into OpenCode
 6. Select a Matthew AI model (e.g., `matthew/gpt-5.2`) and start coding
 
 ## How it works
