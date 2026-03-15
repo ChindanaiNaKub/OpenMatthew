@@ -15,7 +15,15 @@ Inspired by [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-an
 
 No additional credentials or registration needed — the plugin uses Matthew's existing OAuth configuration.
 
-## Installation
+## Quick Start
+
+### Option A: Let an LLM do it
+
+Paste this into any LLM agent (Claude Code, OpenCode, Cursor, etc.):
+
+> Install the opencode-matthew-auth plugin and add the Matthew AI model definitions to ~/.config/opencode/opencode.json by following: https://raw.githubusercontent.com/ChindanaiNaKub/OpenMatthew/main/README.md
+
+### Option B: Manual Installation
 
 Add the plugin to your `opencode.json`:
 
