@@ -15,6 +15,33 @@ import {
 } from "./plugin/storage.js";
 
 const MATTHEW_MODELS = {
+  "gpt-5.2": {
+    name: "GPT-5.2",
+    attachment: true,
+    reasoning: true,
+    temperature: true,
+    tool_call: true,
+    cost: { input: 0, output: 0 },
+    limit: { context: 128000, output: 16384 },
+  },
+  "gpt-5-mini": {
+    name: "GPT-5 Mini",
+    attachment: true,
+    reasoning: true,
+    temperature: true,
+    tool_call: true,
+    cost: { input: 0, output: 0 },
+    limit: { context: 128000, output: 16384 },
+  },
+  "gpt-4.1": {
+    name: "GPT-4.1",
+    attachment: true,
+    reasoning: false,
+    temperature: true,
+    tool_call: true,
+    cost: { input: 0, output: 0 },
+    limit: { context: 128000, output: 16384 },
+  },
   "gpt-4o": {
     name: "GPT-4o",
     attachment: true,
