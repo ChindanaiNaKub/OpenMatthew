@@ -2,19 +2,38 @@
 
 ## Cursor Cloud specific instructions
 
-### Repository State
+### Repository Overview
 
-This is a greenfield repository ("OpenMatthew") with only a `README.md` and `LICENSE` file. There is no source code, no dependency manifests, no configuration files, and no application to build or run.
+This is **opencode-matthew-auth**, an OpenCode plugin that provides CMU OAuth authentication for the [Matthew AI](https://matthew.cmu.ac.th) platform at Chiang Mai University. It is modeled after [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth).
+
+### Tech Stack
+
+- TypeScript (ESM, strict mode)
+- Node.js >= 20
+- `@opencode-ai/plugin` SDK for the plugin interface
 
 ### Services
 
-There are currently no services in this repository.
+| Service | Required | Notes |
+|---------|----------|-------|
+| OpenCode | Yes | The plugin host; plugin is loaded by OpenCode at runtime |
+| CMU OAuth (oauth.cmu.ac.th) | Yes | External auth provider; requires Client ID and Secret |
+| Matthew AI (matthew.cmu.ac.th) | Yes | The AI backend; CMU account required |
 
-### Lint / Test / Build / Run
+### Common Commands
 
-No commands are available yet. Once source code and dependency manifests are added, update this section with the relevant commands.
+See `package.json` scripts. Key commands:
 
-### Notes
+- `npm run typecheck` — type-check without emitting
+- `npm run build` — compile to `dist/`
+- `npm run lint` — alias for typecheck (no separate linter configured)
 
-- The README describes this project as "using matthew ai with opencode." OpenCode is a terminal-based AI coding agent (see [opencode-ai/opencode](https://github.com/opencode-ai/opencode)).
-- When the project is scaffolded with actual code and dependencies, the VM update script and this file should be updated accordingly.
+### Environment Variables
+
+The plugin requires `CMU_OAUTH_CLIENT_ID` and `CMU_OAUTH_CLIENT_SECRET` at runtime. These are obtained by registering an OAuth app at oauth.cmu.ac.th. They are **not** needed for build/typecheck.
+
+### Development Notes
+
+- The build output goes to `dist/` (ESM, with declarations and source maps).
+- The OAuth callback server listens on port 51122 (configurable via `OPENCODE_MATTHEW_OAUTH_BIND`).
+- Account credentials are stored in `~/.config/opencode/matthew-accounts.json`.

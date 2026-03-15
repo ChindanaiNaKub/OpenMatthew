@@ -1,0 +1,59 @@
+{
+  "name": "opencode-matthew-auth",
+  "version": "0.1.0",
+  "description": "CMU Matthew AI OAuth auth plugin for OpenCode - access GPT-4o using CMU credentials",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "type": "module",
+  "license": "MIT",
+  "author": "Chindanai Jaiman",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ChindanaiNaKub/OpenMatthew.git"
+  },
+  "homepage": "https://github.com/ChindanaiNaKub/OpenMatthew#readme",
+  "bugs": {
+    "url": "https://github.com/ChindanaiNaKub/OpenMatthew/issues"
+  },
+  "keywords": [
+    "opencode",
+    "matthew",
+    "cmu",
+    "oauth",
+    "plugin",
+    "auth",
+    "gpt-4o",
+    "chiang-mai-university"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "node --test dist/**/*.test.js",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^0.15.30"
+  }
+}
