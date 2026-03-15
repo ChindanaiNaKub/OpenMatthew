@@ -4,36 +4,32 @@
 
 ### Repository Overview
 
-This is **opencode-matthew-auth**, an OpenCode plugin that provides CMU OAuth authentication for the [Matthew AI](https://matthew.cmu.ac.th) platform at Chiang Mai University. It is modeled after [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth).
+**opencode-matthew-auth** is an OpenCode plugin for CMU Matthew AI authentication. It authenticates users via Microsoft Azure AD (CMU tenant) and proxies requests to the Matthew AI platform at matthew.cmu.ac.th.
 
 ### Tech Stack
 
-- TypeScript (ESM, strict mode)
-- Node.js >= 20
-- `@opencode-ai/plugin` SDK for the plugin interface
+- TypeScript (ESM, strict mode), Node.js >= 20
+- `@opencode-ai/plugin` SDK
 
-### Services
+### Key Discovery: Authentication
 
-| Service | Required | Notes |
-|---------|----------|-------|
-| OpenCode | Yes | The plugin host; plugin is loaded by OpenCode at runtime |
-| CMU OAuth (oauth.cmu.ac.th) | Yes | External auth provider; requires Client ID and Secret |
-| Matthew AI (matthew.cmu.ac.th) | Yes | The AI backend; CMU account required |
+Matthew uses **Microsoft Azure AD** for authentication, NOT CMU OAuth (`oauth.cmu.ac.th`). The OAuth parameters were extracted from the Matthew JS bundle (`main.cfe9534d.js`):
+
+- **Tenant ID**: `cf81f1df-de59-4c29-91da-a2dfd04aa751`
+- **Client ID**: `5bedd6e5-ae10-4b96-abca-5c887092a70c`
+- **Scope**: `api://cmu/Mis.Account.Read.Me.Basicinfo`
+- **Redirect URI**: `https://matthew.cmu.ac.th`
+
+Token exchange happens server-side at `POST /api/oauth_callback` with `{code: "<auth_code>"}`.
 
 ### Common Commands
 
-See `package.json` scripts. Key commands:
-
-- `npm run typecheck` — type-check without emitting
+- `npm run typecheck` — type-check
 - `npm run build` — compile to `dist/`
-- `npm run lint` — alias for typecheck (no separate linter configured)
+- `npm run lint` — alias for typecheck
 
-### Environment Variables
+### Gotchas
 
-The plugin requires `CMU_OAUTH_CLIENT_ID` and `CMU_OAUTH_CLIENT_SECRET` at runtime. These are obtained by registering an OAuth app at oauth.cmu.ac.th. They are **not** needed for build/typecheck.
-
-### Development Notes
-
-- The build output goes to `dist/` (ESM, with declarations and source maps).
-- The OAuth callback server listens on port 51122 (configurable via `OPENCODE_MATTHEW_OAUTH_BIND`).
-- Account credentials are stored in `~/.config/opencode/matthew-accounts.json`.
+- The tenant ID `cf81f1df-de59-4c29-91da-a2dfd04aa751` looks similar to `cf8f1fdf-de69-...` in screenshots. Always extract from source code, not screenshots.
+- The `CMU_OAUTH_CLIENT_ID` / `CMU_OAUTH_CLIENT_SECRET` env vars are NOT needed. Matthew does not use CMU OAuth.
+- Matthew's API uses Bearer token auth. Chat uses SSE streaming via `/api/thread_sse_response_stream?thread_id=...&token=...`.
