@@ -15,36 +15,86 @@ Inspired by [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-an
 
 No additional credentials or registration needed — the plugin uses Matthew's existing OAuth configuration.
 
-## Quick Start
+## Installation
 
-### Option A: Let an LLM do it
+<details open>
+<summary><b>For Humans</b></summary>
+
+**Option A: Let an LLM do it**
 
 Paste this into any LLM agent (Claude Code, OpenCode, Cursor, etc.):
 
-> Install the opencode-matthew-auth plugin and add the Matthew AI model definitions to ~/.config/opencode/opencode.json by following: https://raw.githubusercontent.com/ChindanaiNaKub/OpenMatthew/main/README.md
-
-### Option B: Manual Installation
-
-Add the plugin to your `opencode.json`:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "matthew": {
-      "name": "CMU Matthew AI",
-      "models": {
-        "gpt-5.2": { "name": "GPT-5.2" },
-        "gpt-5-mini": { "name": "GPT-5 Mini" },
-        "gpt-4.1": { "name": "GPT-4.1" },
-        "gpt-4o": { "name": "GPT-4o" },
-        "gpt-4o-mini": { "name": "GPT-4o Mini" }
-      }
-    }
-  },
-  "plugin": ["opencode-matthew-auth"]
-}
 ```
+Install the opencode-matthew-auth plugin and add the Matthew AI model definitions to ~/.config/opencode/opencode.json by following: https://raw.githubusercontent.com/ChindanaiNaKub/OpenMatthew/main/README.md
+```
+
+**Option B: Manual setup**
+
+1. **Add the plugin** to `~/.config/opencode/opencode.json`:
+
+   ```json
+   {
+     "plugin": ["opencode-matthew-auth"]
+   }
+   ```
+
+2. **Login** with your CMU account:
+
+   ```bash
+   opencode auth login
+   ```
+
+3. **Add models** — copy the [full configuration](#available-models) below, or manually add to your `opencode.json`:
+
+   ```json
+   {
+     "provider": {
+       "matthew": {
+         "name": "CMU Matthew AI",
+         "models": {
+           "gpt-5.2": { "name": "GPT-5.2" },
+           "gpt-5-mini": { "name": "GPT-5 Mini" },
+           "gpt-4.1": { "name": "GPT-4.1" },
+           "gpt-4o": { "name": "GPT-4o" },
+           "gpt-4o-mini": { "name": "GPT-4o Mini" }
+         }
+       }
+     }
+   }
+   ```
+
+4. **Use it:**
+
+   ```bash
+   opencode run "Hello" --model=matthew/gpt-5.2
+   ```
+
+</details>
+
+<details>
+<summary><b>For LLM Agents</b></summary>
+
+### Step-by-Step Instructions
+
+1. Edit the OpenCode configuration file at `~/.config/opencode/opencode.json`
+
+   > **Note**: This path works on all platforms. On Windows, `~` resolves to your user home directory (e.g., `C:\Users\YourName`).
+
+2. Add `"opencode-matthew-auth"` to the `plugin` array
+
+3. Add the model definitions from the [Available Models](#available-models) section under `provider.matthew`
+
+4. Set `provider` to `"matthew"` and choose a model
+
+### Verification
+
+```bash
+opencode run "Hello" --model=matthew/gpt-5.2
+```
+
+</details>
+
+---
 
 ## Usage
 
