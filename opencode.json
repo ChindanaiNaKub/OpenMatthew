@@ -1,0 +1,19 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "matthew": {
+      "name": "CMU Matthew AI",
+      "models": {
+        "gpt-4o": {
+          "name": "GPT-4o"
+        },
+        "gpt-4o-mini": {
+          "name": "GPT-4o Mini"
+        }
+      }
+    }
+  },
+  "plugin": [
+    "opencode-matthew-auth"
+  ]
+}
