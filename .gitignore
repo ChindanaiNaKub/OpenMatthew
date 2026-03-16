@@ -3,7 +3,6 @@ dist/
 *.tsbuildinfo
 .env
 .env.local
-.env.example
 
 # Internal research/investigation notes — not for publication
 matthew-*.md

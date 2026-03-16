@@ -27,7 +27,7 @@ No additional credentials or registration needed — the plugin uses Matthew's e
 Paste this into any LLM agent (Claude Code, OpenCode, Cursor, etc.):
 
 ```
-Install the opencode-matthew-auth plugin and add the Matthew AI model definitions to ~/.config/opencode/opencode.json by following: https://raw.githubusercontent.com/ChindanaiNaKub/OpenMatthew/main/README.md
+Install the OpenMatthew plugin (github:ChindanaiNaKub/OpenMatthew) and add the Matthew AI model definitions to ~/.config/opencode/opencode.json by following: https://raw.githubusercontent.com/ChindanaiNaKub/OpenMatthew/main/README.md
 ```
 
 **Option B: Manual setup**
@@ -36,7 +36,7 @@ Install the opencode-matthew-auth plugin and add the Matthew AI model definition
 
    ```json
    {
-     "plugin": ["opencode-matthew-auth"]
+     "plugin": ["github:ChindanaiNaKub/OpenMatthew"]
    }
    ```
 
@@ -82,7 +82,7 @@ Install the opencode-matthew-auth plugin and add the Matthew AI model definition
 
    > **Note**: This path works on all platforms. On Windows, `~` resolves to your user home directory (e.g., `C:\Users\YourName`).
 
-2. Add `"opencode-matthew-auth"` to the `plugin` array
+2. Add `"github:ChindanaiNaKub/OpenMatthew"` to the `plugin` array
 
 3. Add the model definitions from the [Available Models](#available-models) section under `provider.matthew`
 
