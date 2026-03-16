@@ -4,14 +4,9 @@ import {
   MATTHEW_PROVIDER_ID,
   MATTHEW_API_BASE,
   MATTHEW_CLIENT_ID,
-  MATTHEW_OAUTH_CALLBACK,
+  MATTHEW_REDIRECT_URI,
 } from "./constants.js";
-import {
-  authorizeMicrosoftPKCE,
-  exchangeWithMicrosoft,
-  exchangeViaMatthew,
-} from "./oauth/microsoft.js";
-import { startOAuthListener } from "./plugin/server.js";
+import { authorizeMicrosoft } from "./oauth/microsoft.js";
 import {
   loadAccounts,
   saveAccounts,
@@ -78,17 +73,15 @@ function openBrowser(url: string): void {
 /**
  * Main OpenCode plugin for CMU Matthew AI authentication.
  *
- * Fully automatic OAuth flow:
- * 1. Opens Microsoft SSO login in browser (with PKCE + localhost redirect)
+ * Auth flow:
+ * 1. Opens matthew.cmu.ac.th login in browser
  * 2. User logs in with CMU Account + MFA
- * 3. Browser auto-redirects to localhost, plugin captures the code
- * 4. Plugin exchanges code for Matthew access token
+ * 3. After login, user copies token (F12 → Console → short command)
+ * 4. Pastes token into OpenCode
  */
 export const MatthewOAuthPlugin: Plugin = async () => {
   const matthewApiBase =
     process.env.MATTHEW_API_BASE || MATTHEW_API_BASE;
-  const clientId =
-    process.env.MATTHEW_OAUTH_CLIENT_ID || MATTHEW_CLIENT_ID;
 
   return {
     async config(config) {
@@ -153,55 +146,27 @@ export const MatthewOAuthPlugin: Plugin = async () => {
           label: "Login with CMU Account",
 
           async authorize() {
-            const { url, codeVerifier } = authorizeMicrosoftPKCE(clientId);
-
-            const listener = await startOAuthListener();
-            openBrowser(url);
+            openBrowser(MATTHEW_REDIRECT_URI);
 
             return {
-              url,
+              url: MATTHEW_REDIRECT_URI,
               instructions:
-                "Login with your CMU Account via Microsoft SSO. " +
-                "The browser will redirect back automatically after login.",
-              method: "auto" as const,
+                "1. Login to matthew.cmu.ac.th with your CMU Account\n" +
+                "2. After login, press F12 → Console tab → paste this:\n" +
+                "   copy(JSON.parse(localStorage.user).access_token)\n" +
+                "3. Come back here and Ctrl+V to paste the token",
+              method: "code" as const,
 
-              async callback() {
+              async callback(tokenInput: string) {
                 try {
-                  const callbackUrl = await listener.waitForCallback();
-                  const code = callbackUrl.searchParams.get("code");
-                  const error = callbackUrl.searchParams.get("error");
+                  let token = tokenInput.trim();
 
-                  if (error || !code) {
-                    const desc =
-                      callbackUrl.searchParams.get("error_description") ||
-                      error ||
-                      "No authorization code";
-                    console.error(`[matthew] OAuth failed: ${desc}`);
+                  if (!token) {
                     return { type: "failed" as const };
                   }
 
-                  // Strategy 1: Exchange via Matthew's backend
-                  let accessToken: string | null = null;
-                  const matthewResult = await exchangeViaMatthew(code);
-                  if (matthewResult.type === "success") {
-                    accessToken = matthewResult.accessToken;
-                  }
-
-                  // Strategy 2: Exchange directly with Microsoft using PKCE
-                  if (!accessToken) {
-                    const msResult = await exchangeWithMicrosoft(
-                      code,
-                      codeVerifier,
-                      clientId,
-                    );
-                    if (msResult.type === "success") {
-                      accessToken = msResult.accessToken;
-                    } else {
-                      console.error(
-                        `[matthew] Token exchange failed: ${msResult.error}`,
-                      );
-                      return { type: "failed" as const };
-                    }
+                  if (token.startsWith('"') && token.endsWith('"')) {
+                    token = token.slice(1, -1);
                   }
 
                   const storage = (await loadAccounts()) ?? {
@@ -211,7 +176,7 @@ export const MatthewOAuthPlugin: Plugin = async () => {
                   };
 
                   storage.accounts.push({
-                    accessToken,
+                    accessToken: token,
                     addedAt: Date.now(),
                     lastUsed: Date.now(),
                   });
@@ -220,15 +185,13 @@ export const MatthewOAuthPlugin: Plugin = async () => {
 
                   return {
                     type: "success" as const,
-                    refresh: accessToken,
-                    access: accessToken,
+                    refresh: token,
+                    access: token,
                     expires: Date.now() + 3600 * 1000,
                   };
                 } catch (err) {
-                  console.error("[matthew] OAuth error:", err);
+                  console.error("[matthew] Auth error:", err);
                   return { type: "failed" as const };
-                } finally {
-                  await listener.close().catch(() => {});
                 }
               },
             };
