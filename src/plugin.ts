@@ -170,6 +170,16 @@ async function handleStreaming(
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  const encoder = new TextEncoder();
+
+  function enqueueFinish(controller: ReadableStreamDefaultController) {
+    controller.enqueue(encoder.encode(formatOpenAISSE({
+      choices: [{ delta: {}, finish_reason: "stop", index: 0 }],
+      model,
+    })));
+    controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+    controller.close();
+  }
 
   const stream = new ReadableStream({
     async pull(controller) {
@@ -177,13 +187,7 @@ async function handleStreaming(
         const { done, value } = await reader.read();
 
         if (done) {
-          const doneChunk = formatOpenAISSE({
-            choices: [{ delta: {}, finish_reason: "stop", index: 0 }],
-            model,
-          });
-          controller.enqueue(new TextEncoder().encode(doneChunk));
-          controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
-          controller.close();
+          enqueueFinish(controller);
           return;
         }
 
@@ -191,27 +195,58 @@ async function handleStreaming(
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
 
+        let currentEvent = "";
+
         for (const line of lines) {
-          if (!line.startsWith("data:")) continue;
+          if (line.startsWith("event:")) {
+            currentEvent = line.slice(6).trim();
+            continue;
+          }
+
+          if (currentEvent === "complete") {
+            enqueueFinish(controller);
+            return;
+          }
+
+          if (currentEvent === "error") {
+            const jsonStr = line.startsWith("data:") ? line.slice(5).trim() : "";
+            const errMsg = jsonStr ? jsonStr : "Stream error";
+            controller.enqueue(encoder.encode(formatOpenAISSE({
+              choices: [{ delta: { content: `\n[Error: ${errMsg}]` }, finish_reason: "stop", index: 0 }],
+              model,
+            })));
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+            return;
+          }
+
+          if (!line.startsWith("data:")) {
+            currentEvent = "";
+            continue;
+          }
+
           const jsonStr = line.slice(5).trim();
           if (!jsonStr) continue;
 
-          try {
-            const data = JSON.parse(jsonStr) as { message?: string };
-            if (data.message) {
-              const chunk = formatOpenAISSE({
-                choices: [{
-                  delta: { content: data.message, role: "assistant" },
-                  finish_reason: null,
-                  index: 0,
-                }],
-                model,
-              });
-              controller.enqueue(new TextEncoder().encode(chunk));
+          if (currentEvent === "" || currentEvent === "message") {
+            try {
+              const data = JSON.parse(jsonStr) as { message?: string };
+              if (data.message) {
+                controller.enqueue(encoder.encode(formatOpenAISSE({
+                  choices: [{
+                    delta: { content: data.message, role: "assistant" },
+                    finish_reason: null,
+                    index: 0,
+                  }],
+                  model,
+                })));
+              }
+            } catch {
+              // skip non-JSON
             }
-          } catch {
-            // skip non-JSON SSE lines
           }
+
+          currentEvent = "";
         }
       } catch (err) {
         controller.error(err);
