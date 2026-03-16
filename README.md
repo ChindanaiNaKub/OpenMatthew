@@ -102,9 +102,9 @@ opencode run "Hello" --model=matthew/gpt-5.2
 2. Browser opens matthew.cmu.ac.th → login with your CMU Account (+ MFA)
 3. After login, press `F12` → **Console** tab → paste this and press Enter:
    ```js
-   copy(JSON.parse(localStorage.user).access_token)
+   copy(localStorage.user)
    ```
-4. Go back to OpenCode and press `Ctrl+V` to paste the token
+4. Go back to OpenCode and press `Ctrl+V` to paste
 5. Done! Select a model like `matthew/gpt-5.2` and start coding
 
 ### Pro tip: Bookmarklet (one-time setup)
@@ -112,7 +112,7 @@ opencode run "Hello" --model=matthew/gpt-5.2
 Drag this link to your bookmarks bar to skip the console step next time:
 
 ```
-javascript:void(navigator.clipboard.writeText(JSON.parse(localStorage.user).access_token).then(()=>alert('Token copied!')))
+javascript:void(navigator.clipboard.writeText(localStorage.user).then(()=>alert('Copied! Paste into OpenCode.')))
 ```
 
 Create a bookmark, name it "Copy Matthew Token", and paste the above as the URL. After logging into Matthew, just click the bookmark → paste into OpenCode.
