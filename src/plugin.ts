@@ -4,9 +4,14 @@ import {
   MATTHEW_PROVIDER_ID,
   MATTHEW_API_BASE,
   MATTHEW_CLIENT_ID,
-  MATTHEW_REDIRECT_URI,
+  MATTHEW_OAUTH_CALLBACK,
 } from "./constants.js";
-import { authorizeMicrosoft } from "./oauth/microsoft.js";
+import {
+  authorizeMicrosoftPKCE,
+  exchangeWithMicrosoft,
+  exchangeViaMatthew,
+} from "./oauth/microsoft.js";
+import { startOAuthListener } from "./plugin/server.js";
 import {
   loadAccounts,
   saveAccounts,
@@ -73,8 +78,11 @@ function openBrowser(url: string): void {
 /**
  * Main OpenCode plugin for CMU Matthew AI authentication.
  *
- * Uses Microsoft Azure AD (CMU tenant) SSO via the Matthew web app's
- * login flow, then proxies LLM requests through the Matthew AI platform.
+ * Fully automatic OAuth flow:
+ * 1. Opens Microsoft SSO login in browser (with PKCE + localhost redirect)
+ * 2. User logs in with CMU Account + MFA
+ * 3. Browser auto-redirects to localhost, plugin captures the code
+ * 4. Plugin exchanges code for Matthew access token
  */
 export const MatthewOAuthPlugin: Plugin = async () => {
   const matthewApiBase =
@@ -142,30 +150,58 @@ export const MatthewOAuthPlugin: Plugin = async () => {
       methods: [
         {
           type: "oauth" as const,
-          label: "Login with CMU Account (Matthew AI)",
+          label: "Login with CMU Account",
 
           async authorize() {
-            openBrowser(MATTHEW_REDIRECT_URI);
+            const { url, codeVerifier } = authorizeMicrosoftPKCE(clientId);
+
+            const listener = await startOAuthListener();
+            openBrowser(url);
 
             return {
-              url: MATTHEW_REDIRECT_URI,
+              url,
               instructions:
-                "1. Login to matthew.cmu.ac.th with your CMU Account\n" +
-                "2. After login, open browser console (F12 → Console)\n" +
-                "3. Run: JSON.parse(localStorage.getItem('user')).access_token\n" +
-                "4. Copy the token and paste it here",
-              method: "code" as const,
+                "Login with your CMU Account via Microsoft SSO. " +
+                "The browser will redirect back automatically after login.",
+              method: "auto" as const,
 
-              async callback(tokenInput: string) {
+              async callback() {
                 try {
-                  let token = tokenInput.trim();
+                  const callbackUrl = await listener.waitForCallback();
+                  const code = callbackUrl.searchParams.get("code");
+                  const error = callbackUrl.searchParams.get("error");
 
-                  if (!token) {
+                  if (error || !code) {
+                    const desc =
+                      callbackUrl.searchParams.get("error_description") ||
+                      error ||
+                      "No authorization code";
+                    console.error(`[matthew] OAuth failed: ${desc}`);
                     return { type: "failed" as const };
                   }
 
-                  if (token.startsWith('"') && token.endsWith('"')) {
-                    token = token.slice(1, -1);
+                  // Strategy 1: Exchange via Matthew's backend
+                  let accessToken: string | null = null;
+                  const matthewResult = await exchangeViaMatthew(code);
+                  if (matthewResult.type === "success") {
+                    accessToken = matthewResult.accessToken;
+                  }
+
+                  // Strategy 2: Exchange directly with Microsoft using PKCE
+                  if (!accessToken) {
+                    const msResult = await exchangeWithMicrosoft(
+                      code,
+                      codeVerifier,
+                      clientId,
+                    );
+                    if (msResult.type === "success") {
+                      accessToken = msResult.accessToken;
+                    } else {
+                      console.error(
+                        `[matthew] Token exchange failed: ${msResult.error}`,
+                      );
+                      return { type: "failed" as const };
+                    }
                   }
 
                   const storage = (await loadAccounts()) ?? {
@@ -174,25 +210,25 @@ export const MatthewOAuthPlugin: Plugin = async () => {
                     activeIndex: 0,
                   };
 
-                  const account = {
-                    accessToken: token,
+                  storage.accounts.push({
+                    accessToken,
                     addedAt: Date.now(),
                     lastUsed: Date.now(),
-                  };
-
-                  storage.accounts.push(account);
+                  });
                   storage.activeIndex = storage.accounts.length - 1;
                   await saveAccounts(storage);
 
                   return {
                     type: "success" as const,
-                    refresh: token,
-                    access: token,
+                    refresh: accessToken,
+                    access: accessToken,
                     expires: Date.now() + 3600 * 1000,
                   };
                 } catch (err) {
-                  console.error("[matthew] Auth error:", err);
+                  console.error("[matthew] OAuth error:", err);
                   return { type: "failed" as const };
+                } finally {
+                  await listener.close().catch(() => {});
                 }
               },
             };

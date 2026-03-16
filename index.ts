@@ -1,7 +1,8 @@
 export { MatthewOAuthPlugin } from "./src/plugin.js";
 export {
-  authorizeMicrosoft,
+  authorizeMicrosoftPKCE,
   exchangeViaMatthew,
+  exchangeWithMicrosoft,
 } from "./src/oauth/microsoft.js";
 export type {
   MicrosoftAuthorization,

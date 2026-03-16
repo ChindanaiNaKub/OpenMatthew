@@ -99,14 +99,10 @@ opencode run "Hello" --model=matthew/gpt-5.2
 ## Usage
 
 1. Start OpenCode
-2. Run `opencode auth login` and select **"Login with CMU Account (Matthew AI)"**
-3. Your browser will open matthew.cmu.ac.th — login with your CMU Account
-4. After login, open the browser console (`F12` → Console) and run:
-   ```js
-   JSON.parse(localStorage.getItem('user')).access_token
-   ```
-5. Copy the token and paste it into OpenCode
-6. Select a Matthew AI model (e.g., `matthew/gpt-5.2`) and start coding
+2. Run `opencode auth login` and select **"Login with CMU Account"**
+3. Your browser opens Microsoft SSO — login with your CMU Account (+ MFA)
+4. After login, the browser redirects back automatically — you're done!
+5. Select a Matthew AI model (e.g., `matthew/gpt-5.2`) and start coding
 
 ## How it works
 
@@ -115,11 +111,9 @@ opencode run "Hello" --model=matthew/gpt-5.2
 ```
 User → opencode auth login
   → Browser opens Microsoft SSO (CMU Azure AD tenant)
-  → User logs in with CMU Account
-  → Redirect to matthew.cmu.ac.th?code=...
-  → User pastes code into OpenCode
-  → Plugin calls matthew.cmu.ac.th/api/oauth_callback
-  → Matthew backend exchanges code for access token
+  → User logs in with CMU Account (+ MFA)
+  → Auto-redirect to localhost:51122 with auth code
+  → Plugin exchanges code for access token
   → Token stored locally, ready to use
 ```
 
