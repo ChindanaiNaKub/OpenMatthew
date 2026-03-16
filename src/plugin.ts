@@ -95,6 +95,7 @@ export const MatthewOAuthPlugin: Plugin = async () => {
 
       config.provider[MATTHEW_PROVIDER_ID] = {
         ...existing,
+        api: existing.api ?? matthewApiBase,
         name: existing.name ?? "CMU Matthew AI",
         models: {
           ...defaultModels,
