@@ -98,11 +98,24 @@ opencode run "Hello" --model=matthew/gpt-5.2
 
 ## Usage
 
-1. Start OpenCode
-2. Run `opencode auth login` and select **"Login with CMU Account"**
-3. Your browser opens Microsoft SSO — login with your CMU Account (+ MFA)
-4. After login, the browser redirects back automatically — you're done!
-5. Select a Matthew AI model (e.g., `matthew/gpt-5.2`) and start coding
+1. Run `opencode auth login` → select **"Login with CMU Account"**
+2. Browser opens matthew.cmu.ac.th → login with your CMU Account (+ MFA)
+3. After login, press `F12` → **Console** tab → paste this and press Enter:
+   ```js
+   copy(JSON.parse(localStorage.user).access_token)
+   ```
+4. Go back to OpenCode and press `Ctrl+V` to paste the token
+5. Done! Select a model like `matthew/gpt-5.2` and start coding
+
+### Pro tip: Bookmarklet (one-time setup)
+
+Drag this link to your bookmarks bar to skip the console step next time:
+
+```
+javascript:void(navigator.clipboard.writeText(JSON.parse(localStorage.user).access_token).then(()=>alert('Token copied!')))
+```
+
+Create a bookmark, name it "Copy Matthew Token", and paste the above as the URL. After logging into Matthew, just click the bookmark → paste into OpenCode.
 
 ## How it works
 
@@ -110,11 +123,11 @@ opencode run "Hello" --model=matthew/gpt-5.2
 
 ```
 User → opencode auth login
-  → Browser opens Microsoft SSO (CMU Azure AD tenant)
-  → User logs in with CMU Account (+ MFA)
-  → Auto-redirect to localhost:51122 with auth code
-  → Plugin exchanges code for access token
-  → Token stored locally, ready to use
+  → Browser opens matthew.cmu.ac.th
+  → User logs in with CMU Account (Microsoft SSO + MFA)
+  → Token saved in browser localStorage
+  → User copies token (console or bookmarklet)
+  → Pastes into OpenCode → stored locally
 ```
 
 ### Key Technical Details
