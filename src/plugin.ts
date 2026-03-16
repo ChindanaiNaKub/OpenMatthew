@@ -120,15 +120,24 @@ async function handleMatthewChat(
     );
   }
 
-  const msgData = (await msgResponse.json()) as {
-    thread_actual_id?: string;
-    thread_id?: string;
-  };
-  const threadId = msgData.thread_actual_id || msgData.thread_id;
+  const msgText = await msgResponse.text();
+  let msgData: Record<string, unknown>;
+  try {
+    msgData = JSON.parse(msgText);
+  } catch {
+    return new Response(
+      JSON.stringify({ error: { message: `Matthew returned non-JSON: ${msgText.substring(0, 200)}` } }),
+      { status: 502, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  const threadId =
+    (msgData.thread_actual_id as string) ||
+    (msgData.thread_id as string);
 
   if (!threadId) {
     return new Response(
-      JSON.stringify({ error: { message: "No thread_id returned from Matthew" } }),
+      JSON.stringify({ error: { message: `No thread_id. Matthew response: ${JSON.stringify(msgData).substring(0, 300)}` } }),
       { status: 500, headers: { "Content-Type": "application/json" } },
     );
   }
