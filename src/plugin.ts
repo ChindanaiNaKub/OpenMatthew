@@ -88,6 +88,8 @@ interface OpenAIChatRequest {
 async function handleMatthewChat(
   body: OpenAIChatRequest,
   accessToken: string,
+  sessionToken: string,
+  assistantId: string,
   apiBase: string,
 ): Promise<Response> {
   const lastUserMsg = [...body.messages]
@@ -96,11 +98,11 @@ async function handleMatthewChat(
   const messageText = lastUserMsg?.content || "";
 
   const formData = new FormData();
-  formData.append("token", accessToken);
+  formData.append("token", sessionToken);
   formData.append("message", messageText);
   formData.append("thread_id", "newchat");
   formData.append("tid", "newchat");
-  formData.append("aid", "default");
+  formData.append("aid", assistantId);
   formData.append("uname", "OpenCode");
   formData.append("uname_th", "OpenCode");
 
@@ -301,7 +303,23 @@ export const MatthewOAuthPlugin: Plugin = async () => {
           return {};
         }
 
-        const accessToken = auth.access;
+        let accessToken = "";
+        let sessionToken = "";
+        let defaultAssistantId = "default";
+
+        try {
+          const parsed = JSON.parse(auth.access) as {
+            accessToken: string;
+            sessionToken: string;
+            defaultAssistantId?: string;
+          };
+          accessToken = parsed.accessToken;
+          sessionToken = parsed.sessionToken;
+          defaultAssistantId = parsed.defaultAssistantId || "default";
+        } catch {
+          accessToken = auth.access;
+          sessionToken = auth.access;
+        }
 
         const customFetch: typeof fetch = async (input, init) => {
           const request =
@@ -321,7 +339,10 @@ export const MatthewOAuthPlugin: Plugin = async () => {
           if (isChatCompletions) {
             const bodyText = await request.text();
             const body = JSON.parse(bodyText) as OpenAIChatRequest;
-            return handleMatthewChat(body, accessToken, matthewApiBase);
+            return handleMatthewChat(
+              body, accessToken, sessionToken,
+              defaultAssistantId, matthewApiBase,
+            );
           }
 
           const headers = new Headers(request.headers);
@@ -348,17 +369,37 @@ export const MatthewOAuthPlugin: Plugin = async () => {
               instructions:
                 "1. Login to matthew.cmu.ac.th with your CMU Account\n" +
                 "2. After login, press F12 → Console tab → paste this:\n" +
-                "   copy(JSON.parse(localStorage.user).access_token)\n" +
-                "3. Come back here and Ctrl+V to paste the token",
+                "   copy(localStorage.user)\n" +
+                "3. Come back here and Ctrl+V to paste",
               method: "code" as const,
 
-              async callback(tokenInput: string) {
+              async callback(input: string) {
                 try {
-                  let token = tokenInput.trim();
-                  if (!token) return { type: "failed" as const };
+                  const raw = input.trim();
+                  if (!raw) return { type: "failed" as const };
 
-                  if (token.startsWith('"') && token.endsWith('"')) {
-                    token = token.slice(1, -1);
+                  let accessToken: string;
+                  let sessionToken: string;
+                  let defaultAssistantId: string | undefined;
+                  let userName: string | undefined;
+                  let userNameTh: string | undefined;
+
+                  if (raw.startsWith("{")) {
+                    const user = JSON.parse(raw) as Record<string, unknown>;
+                    accessToken = user.access_token as string;
+                    sessionToken = user.token as string;
+                    const da = user.defaultAssistant as Record<string, unknown> | undefined;
+                    defaultAssistantId = da?.daid as string | undefined;
+                    const ui = user.user_info as Record<string, unknown> | undefined;
+                    userName = ui?.firstname_EN as string | undefined;
+                    userNameTh = ui?.firstname_TH as string | undefined;
+                  } else {
+                    accessToken = raw;
+                    sessionToken = raw;
+                  }
+
+                  if (!accessToken || !sessionToken) {
+                    return { type: "failed" as const };
                   }
 
                   const storage = (await loadAccounts()) ?? {
@@ -368,17 +409,23 @@ export const MatthewOAuthPlugin: Plugin = async () => {
                   };
 
                   storage.accounts.push({
-                    accessToken: token,
+                    accessToken,
+                    sessionToken,
+                    defaultAssistantId,
+                    userName,
+                    userNameTh,
                     addedAt: Date.now(),
                     lastUsed: Date.now(),
                   });
                   storage.activeIndex = storage.accounts.length - 1;
                   await saveAccounts(storage);
 
+                  const combined = JSON.stringify({ accessToken, sessionToken, defaultAssistantId });
+
                   return {
                     type: "success" as const,
-                    refresh: token,
-                    access: token,
+                    refresh: combined,
+                    access: combined,
                     expires: Date.now() + 3600 * 1000,
                   };
                 } catch (err) {

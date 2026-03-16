@@ -4,10 +4,11 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
 export interface AccountMetadata {
-  email?: string;
-  firstName?: string;
-  lastName?: string;
   accessToken: string;
+  sessionToken: string;
+  defaultAssistantId?: string;
+  userName?: string;
+  userNameTh?: string;
   addedAt: number;
   lastUsed: number;
 }
