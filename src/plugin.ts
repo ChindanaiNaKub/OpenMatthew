@@ -131,7 +131,9 @@ async function handleMatthewChat(
     );
   }
 
+  const newThread = msgData.new_thread as Record<string, unknown> | undefined;
   const threadId =
+    (newThread?.thread_actual_id as string) ||
     (msgData.thread_actual_id as string) ||
     (msgData.thread_id as string);
 
