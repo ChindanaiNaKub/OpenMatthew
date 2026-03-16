@@ -70,15 +70,202 @@ function openBrowser(url: string): void {
   exec(cmd, () => {});
 }
 
+interface OpenAIMessage {
+  role: string;
+  content: string;
+}
+
+interface OpenAIChatRequest {
+  model: string;
+  messages: OpenAIMessage[];
+  stream?: boolean;
+}
+
 /**
- * Main OpenCode plugin for CMU Matthew AI authentication.
- *
- * Auth flow:
- * 1. Opens matthew.cmu.ac.th login in browser
- * 2. User logs in with CMU Account + MFA
- * 3. After login, user copies token (F12 → Console → short command)
- * 4. Pastes token into OpenCode
+ * Transform an OpenAI-format chat/completions request into Matthew's API.
+ * Matthew uses a thread-based system with FormData + SSE streaming.
  */
+async function handleMatthewChat(
+  body: OpenAIChatRequest,
+  accessToken: string,
+  apiBase: string,
+): Promise<Response> {
+  const lastUserMsg = [...body.messages]
+    .reverse()
+    .find((m) => m.role === "user");
+  const messageText = lastUserMsg?.content || "";
+
+  const formData = new FormData();
+  formData.append("token", accessToken);
+  formData.append("message", messageText);
+  formData.append("thread_id", "newchat");
+  formData.append("tid", "newchat");
+  formData.append("aid", "default");
+  formData.append("uname", "OpenCode");
+  formData.append("uname_th", "OpenCode");
+
+  const msgResponse = await fetch(`${apiBase}/api/thread_sse_message`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: formData,
+  });
+
+  if (!msgResponse.ok) {
+    const errorText = await msgResponse.text();
+    return new Response(
+      JSON.stringify({ error: { message: errorText } }),
+      { status: msgResponse.status, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  const msgData = (await msgResponse.json()) as {
+    thread_actual_id?: string;
+    thread_id?: string;
+  };
+  const threadId = msgData.thread_actual_id || msgData.thread_id;
+
+  if (!threadId) {
+    return new Response(
+      JSON.stringify({ error: { message: "No thread_id returned from Matthew" } }),
+      { status: 500, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  if (body.stream === false) {
+    return handleNonStreaming(threadId, accessToken, apiBase, body.model);
+  }
+
+  return handleStreaming(threadId, accessToken, apiBase, body.model);
+}
+
+async function handleStreaming(
+  threadId: string,
+  accessToken: string,
+  apiBase: string,
+  model: string,
+): Promise<Response> {
+  const sseUrl = `${apiBase}/api/thread_sse_response_stream?thread_id=${threadId}&token=${accessToken}`;
+  const upstream = await fetch(sseUrl);
+
+  if (!upstream.ok || !upstream.body) {
+    return new Response(
+      JSON.stringify({ error: { message: "Failed to connect to Matthew SSE" } }),
+      { status: 502, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const stream = new ReadableStream({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          const doneChunk = formatOpenAISSE({
+            choices: [{ delta: {}, finish_reason: "stop", index: 0 }],
+            model,
+          });
+          controller.enqueue(new TextEncoder().encode(doneChunk));
+          controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+          controller.close();
+          return;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data:")) continue;
+          const jsonStr = line.slice(5).trim();
+          if (!jsonStr) continue;
+
+          try {
+            const data = JSON.parse(jsonStr) as { message?: string };
+            if (data.message) {
+              const chunk = formatOpenAISSE({
+                choices: [{
+                  delta: { content: data.message, role: "assistant" },
+                  finish_reason: null,
+                  index: 0,
+                }],
+                model,
+              });
+              controller.enqueue(new TextEncoder().encode(chunk));
+            }
+          } catch {
+            // skip non-JSON SSE lines
+          }
+        }
+      } catch (err) {
+        controller.error(err);
+      }
+    },
+    cancel() {
+      reader.cancel();
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
+}
+
+async function handleNonStreaming(
+  threadId: string,
+  accessToken: string,
+  apiBase: string,
+  model: string,
+): Promise<Response> {
+  const sseUrl = `${apiBase}/api/thread_sse_response_stream?thread_id=${threadId}&token=${accessToken}`;
+  const upstream = await fetch(sseUrl);
+
+  if (!upstream.ok) {
+    return new Response(
+      JSON.stringify({ error: { message: "Failed to connect to Matthew SSE" } }),
+      { status: 502, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  const text = await upstream.text();
+  let fullContent = "";
+
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("data:")) continue;
+    try {
+      const data = JSON.parse(line.slice(5).trim()) as { message?: string };
+      if (data.message) fullContent += data.message;
+    } catch {
+      // skip
+    }
+  }
+
+  return new Response(
+    JSON.stringify({
+      choices: [{
+        message: { role: "assistant", content: fullContent },
+        finish_reason: "stop",
+        index: 0,
+      }],
+      model,
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+function formatOpenAISSE(data: Record<string, unknown>): string {
+  return `data: ${JSON.stringify(data)}\n\n`;
+}
+
 export const MatthewOAuthPlugin: Plugin = async () => {
   const matthewApiBase =
     process.env.MATTHEW_API_BASE || MATTHEW_API_BASE;
@@ -121,17 +308,24 @@ export const MatthewOAuthPlugin: Plugin = async () => {
             input instanceof Request ? input : new Request(input, init);
           const url = new URL(request.url);
 
+          const isChatCompletions =
+            url.pathname.includes("/chat/completions");
           const isMatthewRequest =
             url.hostname.includes("matthew.cmu.ac.th") ||
             url.origin === matthewApiBase;
 
-          if (!isMatthewRequest) {
+          if (!isMatthewRequest && !isChatCompletions) {
             return fetch(input, init);
+          }
+
+          if (isChatCompletions) {
+            const bodyText = await request.text();
+            const body = JSON.parse(bodyText) as OpenAIChatRequest;
+            return handleMatthewChat(body, accessToken, matthewApiBase);
           }
 
           const headers = new Headers(request.headers);
           headers.set("Authorization", `Bearer ${accessToken}`);
-
           return fetch(new Request(request, { headers }), init);
         };
 
@@ -161,10 +355,7 @@ export const MatthewOAuthPlugin: Plugin = async () => {
               async callback(tokenInput: string) {
                 try {
                   let token = tokenInput.trim();
-
-                  if (!token) {
-                    return { type: "failed" as const };
-                  }
+                  if (!token) return { type: "failed" as const };
 
                   if (token.startsWith('"') && token.endsWith('"')) {
                     token = token.slice(1, -1);
