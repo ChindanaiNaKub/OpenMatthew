@@ -530,6 +530,12 @@ export const MatthewOAuthPlugin: Plugin = async () => {
       output.temperature = 0.2;
       output.topP = 0.95;
 
+      // Force OpenAI-compatible APIs to include usage in SSE stream
+      if (typeof output.options === "object" && output.options !== null) {
+        const opts = output.options as Record<string, unknown>;
+        opts.stream_options = { include_usage: true };
+      }
+
       // Attempt to inject a stronger system prompt if the backend allows it.
       // Matthew's server may ignore or override this, but it's worth trying.
       if (process.env.MATTHEW_OVERRIDE_SYSTEM !== "0") {

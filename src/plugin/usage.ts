@@ -5,6 +5,7 @@ import {
   MATTHEW_API_BASE,
   MATTHEW_PROVIDER_ID,
 } from "../constants.js";
+import { estimateTokens } from "./tokens.js";
 
 export interface UsageStats {
   prompt_tokens: number;
@@ -35,6 +36,10 @@ function getConfigDir(): string {
 
 function getUsagePath(): string {
   return join(getConfigDir(), "matthew-usage.json");
+}
+
+function getUsageLogPath(): string {
+  return join(getConfigDir(), "matthew-usage.log");
 }
 
 export async function loadUsage(): Promise<StoredUsage | null> {
@@ -83,9 +88,20 @@ export async function recordUsage(
 
   await saveUsage(usage);
 
-  console.log(
-    `[${MATTHEW_PROVIDER_ID}] Usage: +${record.usage.prompt_tokens} prompt / +${record.usage.completion_tokens} completion tokens (total: ${usage.totalUsage.total_tokens})`,
-  );
+  const line =
+    `[${MATTHEW_PROVIDER_ID}] Usage: +${record.usage.prompt_tokens} prompt / +${record.usage.completion_tokens} completion tokens (total: ${usage.totalUsage.total_tokens})`;
+
+  // Write to plain-text log for easy tail/cat
+  try {
+    const logPath = getUsageLogPath();
+    const entry = `${new Date(record.timestamp).toISOString()}  ${line}\n`;
+    await fs.appendFile(logPath, entry, { encoding: "utf-8" });
+  } catch {
+    // Best-effort logging
+  }
+
+  // Use console.error for visibility — many IDEs surface stderr more prominently
+  console.error(line);
 }
 
 /**
@@ -170,6 +186,7 @@ export function createUsageTrackingStream(
   const decoder = new TextDecoder();
   let buffer = "";
   let foundUsage: UsageStats | null = null;
+  let responseText = "";
 
   return new ReadableStream<Uint8Array>({
     start(controller) {
@@ -195,6 +212,20 @@ export function createUsageTrackingStream(
                 model,
                 usage: foundUsage,
               }).catch(() => {});
+            } else if (responseText.length > 0) {
+              // Fallback: estimate completion tokens from response text
+              const estimatedCompletion = estimateTokens(responseText);
+              if (estimatedCompletion > 0) {
+                recordUsage({
+                  timestamp: Date.now(),
+                  model,
+                  usage: {
+                    prompt_tokens: 0, // unknown from stream
+                    completion_tokens: estimatedCompletion,
+                    total_tokens: estimatedCompletion,
+                  },
+                }).catch(() => {});
+              }
             }
 
             controller.close();
@@ -204,8 +235,31 @@ export function createUsageTrackingStream(
           // Pass the chunk through unchanged
           controller.enqueue(value);
 
-          // Also parse it for usage
-          buffer += decoder.decode(value, { stream: true });
+          // Also parse it for usage and accumulate text
+          const chunk = decoder.decode(value, { stream: true });
+          buffer += chunk;
+
+          // Extract text content from SSE data lines for fallback estimation
+          const textLines = chunk.split("\n");
+          for (const tl of textLines) {
+            if (tl.startsWith("data:")) {
+              const dataStr = tl.slice(5).trim();
+              if (dataStr && dataStr !== "[DONE]") {
+                try {
+                  const parsed = JSON.parse(dataStr) as Record<string, unknown>;
+                  const choices = parsed.choices as Array<Record<string, unknown>> | undefined;
+                  if (choices && choices[0]) {
+                    const delta = choices[0].delta as Record<string, unknown> | undefined;
+                    const content = delta?.content as string | undefined;
+                    if (content) responseText += content;
+                  }
+                } catch {
+                  // Ignore non-JSON or malformed lines
+                }
+              }
+            }
+          }
+
           const lines = buffer.split("\n");
           // Keep the last partial line in buffer
           buffer = lines.pop() ?? "";
@@ -259,9 +313,9 @@ export function wrapResponseWithUsageTracking(
   if (contentType.includes("application/json")) {
     const clone = response.clone();
     clone
-      .json()
-      .then((data: unknown) => {
-        const parsed = data as Record<string, unknown>;
+      .text()
+      .then((text: string) => {
+        const parsed = JSON.parse(text) as Record<string, unknown>;
         const usage =
           extractUsageFromData(JSON.stringify(parsed)) ??
           (parsed.usage && typeof parsed.usage === "object"
@@ -273,6 +327,23 @@ export function wrapResponseWithUsageTracking(
           recordUsage({ timestamp: Date.now(), model, usage }).catch(
             () => {},
           );
+        } else {
+          // Fallback: estimate from response content
+          const choices = parsed.choices as Array<Record<string, unknown>> | undefined;
+          const msg = choices?.[0]?.message as Record<string, unknown> | undefined;
+          const content = msg?.content as string | undefined;
+          if (content) {
+            const estimated = estimateTokens(content);
+            recordUsage({
+              timestamp: Date.now(),
+              model,
+              usage: {
+                prompt_tokens: 0,
+                completion_tokens: estimated,
+                total_tokens: estimated,
+              },
+            }).catch(() => {});
+          }
         }
       })
       .catch(() => {});
@@ -345,13 +416,13 @@ export async function fetchMatthewUsage(
 export async function printUsageSummary(): Promise<void> {
   const usage = await loadUsage();
   if (!usage) {
-    console.log(`[${MATTHEW_PROVIDER_ID}] No usage recorded yet.`);
+    console.error(`[${MATTHEW_PROVIDER_ID}] No usage recorded yet.`);
     return;
   }
 
-  console.log(`[${MATTHEW_PROVIDER_ID}] Accumulated token usage:`);
-  console.log(`  Prompt tokens:     ${usage.totalUsage.prompt_tokens.toLocaleString()}`);
-  console.log(`  Completion tokens: ${usage.totalUsage.completion_tokens.toLocaleString()}`);
-  console.log(`  Total tokens:      ${usage.totalUsage.total_tokens.toLocaleString()}`);
-  console.log(`  Requests tracked:  ${usage.history.length}`);
+  console.error(`[${MATTHEW_PROVIDER_ID}] Accumulated token usage:`);
+  console.error(`  Prompt tokens:     ${usage.totalUsage.prompt_tokens.toLocaleString()}`);
+  console.error(`  Completion tokens: ${usage.totalUsage.completion_tokens.toLocaleString()}`);
+  console.error(`  Total tokens:      ${usage.totalUsage.total_tokens.toLocaleString()}`);
+  console.error(`  Requests tracked:  ${usage.history.length}`);
 }
