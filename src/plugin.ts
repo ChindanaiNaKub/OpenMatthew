@@ -11,6 +11,16 @@ import {
   loadAccounts,
   saveAccounts,
 } from "./plugin/storage.js";
+import {
+  wrapResponseWithUsageTracking,
+  printUsageSummary,
+  fetchMatthewUsage,
+} from "./plugin/usage.js";
+import {
+  estimateTokens,
+  checkBudget,
+  formatBudget,
+} from "./plugin/tokens.js";
 
 const MATTHEW_MODELS = {
   "gpt-5.2": {
@@ -393,7 +403,12 @@ export const MatthewOAuthPlugin: Plugin = async () => {
 
           const headers = new Headers(request.headers);
           headers.set("Authorization", `Bearer ${accessToken}`);
-          return fetch(new Request(request, { headers }), init);
+
+          const response = await fetch(new Request(request, { headers }), init);
+
+          // Track token usage from SSE streaming responses
+          const modelId = url.searchParams.get("model") ?? undefined;
+          return wrapResponseWithUsageTracking(response, modelId);
         };
 
         return {
@@ -468,6 +483,20 @@ export const MatthewOAuthPlugin: Plugin = async () => {
 
                   const combined = JSON.stringify({ accessToken, sessionToken, defaultAssistantId });
 
+                  // Try to fetch dashboard usage and warn if near limits
+                  try {
+                    const usage = await fetchMatthewUsage(accessToken);
+                    if (usage && (usage.contextUsed || usage.responseUsed)) {
+                      const status = checkBudget(
+                        usage.contextUsed ?? 0,
+                        usage.responseUsed ?? 0,
+                      );
+                      console.log(formatBudget(status));
+                    }
+                  } catch {
+                    // Dashboard usage fetch is best-effort
+                  }
+
                   return {
                     type: "success" as const,
                     refresh: combined,
@@ -483,6 +512,66 @@ export const MatthewOAuthPlugin: Plugin = async () => {
           },
         },
       ],
+    },
+
+    // ── Token-saving hooks ─────────────────────────────────────────
+
+    "chat.params": async (input, output) => {
+      const msgJson = JSON.stringify(input.message);
+      const approx = estimateTokens(msgJson);
+
+      // Log rough token count for visibility
+      console.log(
+        `[matthew] Request: model=${input.model?.id ?? "unknown"}, ` +
+          `msgTokens≈${approx.toLocaleString()}`,
+      );
+
+      // Optimal code-generation settings
+      output.temperature = 0.2;
+      output.topP = 0.95;
+
+      // Attempt to inject a stronger system prompt if the backend allows it.
+      // Matthew's server may ignore or override this, but it's worth trying.
+      if (process.env.MATTHEW_OVERRIDE_SYSTEM !== "0") {
+        const customSystem =
+          process.env.MATTHEW_SYSTEM_PROMPT ??
+          "You are a world-class software engineer. " +
+            "Be concise, precise, and prioritize correctness over verbosity. " +
+            "When editing code, output only the changed sections (diff-style) " +
+            "instead of rewriting entire files unless asked.";
+
+        if (typeof output.options === "object" && output.options !== null) {
+          // OpenAI-compatible body path
+          const opts = output.options as Record<string, unknown>;
+          if (Array.isArray(opts.messages)) {
+            const msgs = opts.messages as Array<Record<string, unknown>>;
+            const hasSystem = msgs.some((m) => m.role === "system");
+            if (!hasSystem) {
+              msgs.unshift({ role: "system", content: customSystem });
+            } else {
+              // Replace the first system message
+              const idx = msgs.findIndex((m) => m.role === "system");
+              if (idx !== -1) msgs[idx] = { role: "system", content: customSystem };
+            }
+          } else if (typeof opts.system === "string") {
+            opts.system = customSystem;
+          }
+        }
+      }
+    },
+
+    "chat.message": async (_input, output) => {
+      const text = output.parts
+        .filter((p) => p.type === "text")
+        .map((p) => (p as { text?: string }).text ?? "")
+        .join("");
+      const approx = estimateTokens(text);
+      if (approx > 8000) {
+        console.warn(
+          `[matthew] Large user message (~${approx.toLocaleString()} tokens). ` +
+            `Consider splitting the request or using \`@file\` references.`,
+        );
+      }
     },
   } satisfies Hooks;
 };

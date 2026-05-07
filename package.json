@@ -1,6 +1,6 @@
 {
   "name": "opencode-matthew-auth",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "CMU Matthew AI OAuth auth plugin for OpenCode - access GPT-4o using CMU credentials",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -44,6 +44,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
     "test": "node --test dist/**/*.test.js",
+    "usage": "node --input-type=module -e \"import('./dist/src/plugin/usage.js').then(m => m.printUsageSummary())\"",
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
