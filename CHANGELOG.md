@@ -27,6 +27,14 @@ speaks the OpenAI API, and OpenCode is one client among several.
   `npm test` matched no files.
 - Three models Matthew had added since the last release: `gpt-5.5`,
   `gpt-5.4`, and `gpt-5.4-mini`.
+- **Token usage tracking and budget warnings** for the OpenCode plugin.
+  OpenCode's panel shows `0 tokens` for Matthew because Matthew strips the
+  `usage` field from its stream, so the plugin records usage itself, keeps a
+  running total in `~/.config/opencode/matthew-usage.json`, prints it with
+  `npm run usage`, and warns when you pass 80% of your dashboard quota.
+  Ships alongside token estimation, pre-flight size warnings, and an
+  optional system-prompt override (`MATTHEW_SYSTEM_PROMPT`,
+  `MATTHEW_OVERRIDE_SYSTEM`).
 
 ### Fixed
 

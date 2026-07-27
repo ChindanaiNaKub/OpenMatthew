@@ -42,7 +42,8 @@
     "serve": "npm run build && node dist/src/server/bin.js",
     "creds": "npm run build && node dist/src/server/creds.js",
     "prepublishOnly": "npm run build",
-    "check-api": "node scripts/check-api.mjs"
+    "check-api": "node scripts/check-api.mjs",
+    "usage": "node --input-type=module -e \"import('./dist/src/core/usage.js').then(m => m.printUsageSummary())\""
   },
   "peerDependencies": {
     "typescript": "^5"

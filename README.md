@@ -165,6 +165,31 @@ javascript:void(navigator.clipboard.writeText(localStorage.user).then(()=>alert(
 
 After logging into Matthew, click it and paste.
 
+### Token usage tracking
+
+OpenCode's panel often shows `0 tokens` for Matthew, because Matthew strips or reformats the `usage` field in its SSE stream and the plugin cannot write data back into OpenCode's UI. So the plugin records usage itself:
+
+- Prints a line after each response, like `[matthew] Usage: +120 prompt / +45 completion tokens (total: 165)`
+- Accumulates totals in `~/.config/opencode/matthew-usage.json`
+- `npm run usage` prints the running total
+- Fetches your dashboard quota on login and warns past 80% of either limit
+
+This applies to the OpenCode plugin. The standalone server does not track usage.
+
+### Stretching your quota
+
+The plugin sets `temperature = 0.2` and `topP = 0.95` on every request, estimates the token count before sending, and warns when a single message passes roughly 8k tokens.
+
+It also tries to replace Matthew's system prompt with a terser one. Matthew injects a hardcoded persona server-side that makes the model introduce itself and answer conservatively, which costs you context tokens and tends to produce long explanations and whole-file rewrites. CMU controls that prompt, so the override may not take. Set `MATTHEW_OVERRIDE_SYSTEM=0` to stop trying, or `MATTHEW_SYSTEM_PROMPT` to supply your own.
+
+What helps most is on your side of the request:
+
+1. **Ask for the output format you want.** "Output only a unified diff, no explanation" beats "fix this file".
+2. **Use a cheap model for cheap work.** `gpt-4o-mini` handles explanations, refactors, and regex.
+3. **Split large tasks into sequenced prompts** rather than one 10k-token request.
+4. **Reference files with `@file`** instead of pasting code, which duplicates tokens.
+5. **Start a new thread for a new topic.** Old context rides along otherwise.
+
 ---
 
 ## Available models
@@ -209,11 +234,17 @@ Two tokens come out of `localStorage.user` and both are needed: `token` (a UUID)
 
 ## Configuration
 
+All optional.
+
 | Variable | Description |
 |----------|-------------|
 | `MATTHEW_API_BASE` | Override the Matthew API base URL |
 | `PORT` | Server port (default `4141`) |
-| `OPENCODE_CONFIG_DIR` | Where the plugin stores accounts (default `~/.config/opencode`) |
+| `OPENCODE_CONFIG_DIR` | Where the plugin stores accounts and usage (default `~/.config/opencode`) |
+| `MATTHEW_CONTEXT_LIMIT` | Context token budget (default 9M) |
+| `MATTHEW_RESPONSE_LIMIT` | Response token budget (default 3M) |
+| `MATTHEW_OVERRIDE_SYSTEM` | `0` to disable system-prompt injection |
+| `MATTHEW_SYSTEM_PROMPT` | Custom system prompt override |
 
 ## Development
 
