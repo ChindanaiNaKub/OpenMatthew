@@ -83,16 +83,72 @@ export async function handleMatthewChat(
   return handleStreaming(threadId, accessToken, apiBase, body.model);
 }
 
+/**
+ * Matthew's response stream is authenticated by a short-lived ticket, not
+ * by the access token: the frontend drives it with an `EventSource`, which
+ * cannot set request headers, so the token is exchanged for a ticket first
+ * and only the ticket travels on the stream URL.
+ */
+async function buildStreamUrl(
+  threadId: string,
+  accessToken: string,
+  apiBase: string,
+): Promise<{ url: string } | { error: Response }> {
+  const ticketResponse = await fetch(`${apiBase}/api/thread_sse_ticket`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ thread_id: threadId }),
+  });
+
+  if (!ticketResponse.ok) {
+    const detail = await ticketResponse.text().catch(() => "");
+    const hint =
+      ticketResponse.status === 401
+        ? " — your Matthew session has expired, log in again for a fresh token"
+        : "";
+    return {
+      error: new Response(
+        JSON.stringify({
+          error: {
+            message: `Failed to obtain Matthew stream ticket (status ${ticketResponse.status})${hint}: ${detail.slice(0, 300)}`,
+          },
+        }),
+        { status: 502, headers: { "Content-Type": "application/json" } },
+      ),
+    };
+  }
+
+  const { ticket } = (await ticketResponse.json()) as { ticket?: string };
+
+  if (!ticket) {
+    return {
+      error: new Response(
+        JSON.stringify({ error: { message: "Matthew returned no stream ticket" } }),
+        { status: 502, headers: { "Content-Type": "application/json" } },
+      ),
+    };
+  }
+
+  return {
+    url:
+      `${apiBase}/api/thread_sse_response_stream?thread_id=${encodeURIComponent(threadId)}` +
+      `&ticket=${encodeURIComponent(ticket)}`,
+  };
+}
+
 export async function handleStreaming(
   threadId: string,
   accessToken: string,
   apiBase: string,
   model: string,
 ): Promise<Response> {
-  const sseUrl = `${apiBase}/api/thread_sse_response_stream?thread_id=${threadId}&token=${accessToken}`;
-  const upstream = await fetch(sseUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  const built = await buildStreamUrl(threadId, accessToken, apiBase);
+  if ("error" in built) return built.error;
+
+  const upstream = await fetch(built.url);
 
   if (!upstream.ok || !upstream.body) {
     const bodyText = await upstream.text().catch(() => "");
@@ -212,10 +268,10 @@ export async function handleNonStreaming(
   apiBase: string,
   model: string,
 ): Promise<Response> {
-  const sseUrl = `${apiBase}/api/thread_sse_response_stream?thread_id=${threadId}&token=${accessToken}`;
-  const upstream = await fetch(sseUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  const built = await buildStreamUrl(threadId, accessToken, apiBase);
+  if ("error" in built) return built.error;
+
+  const upstream = await fetch(built.url);
 
   if (!upstream.ok) {
     const bodyText = await upstream.text().catch(() => "");

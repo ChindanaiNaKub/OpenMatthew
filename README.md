@@ -195,7 +195,8 @@ User → opencode auth login
 |----------|--------|-------------|
 | `/api/oauth_callback` | POST | Exchange auth code for access token |
 | `/api/thread_sse_message` | POST | Send a message to a thread |
-| `/api/thread_sse_response_stream` | GET (SSE) | Stream AI response |
+| `/api/thread_sse_ticket` | POST | Exchange the access token for a short-lived stream ticket |
+| `/api/thread_sse_response_stream` | GET (SSE) | Stream AI response (authenticated by `ticket`, not the token) |
 | `/api/assistants` | GET | List available AI assistants |
 | `/api/apps` | GET | List available apps |
 
