@@ -2,7 +2,7 @@
 id: story-openai-compat-server
 type: story
 title: Standalone OpenAI-compatible server for non-OpenCode platforms
-status: active
+status: done
 parent: project-extract-core
 serves: []
 priority: p1
@@ -20,7 +20,7 @@ us writing anything specific to that platform.
 
 ## Acceptance
 
-- [ ] running the server locally and sending it a `chat/completions`
+- [x] running the server locally and sending it a `chat/completions`
       request with a real Matthew token returns a real streamed response
 - [x] non-streaming requests (`stream: false`) also work
 - [x] the server takes the Matthew token per-request (not baked in at
@@ -43,10 +43,15 @@ clean header value. Falls back to using the raw bearer value as both
 access and session token if it isn't that JSON shape, matching the
 OpenCode adapter's existing fallback behavior.
 
-Verified streaming, non-streaming, and missing-auth (401) end to end
-against a simulated Matthew backend
-(`/tmp/.../scratchpad/verify-server.mjs`, not committed — throwaway check)
-that reproduces the real API's response shapes. The first criterion above
-is unticked because it specifically asks for a *real* Matthew token, which
-this sandboxed session has no CMU credentials to obtain — queued in the
-inbox for a human smoke test. Story stays active until that's confirmed.
+Verified streaming, non-streaming, and missing-auth (401) against a
+simulated Matthew backend, then confirmed against the live API with a real
+CMU token — a real streamed reply came back through the server.
+
+The live run is what caught the bug the simulation could not: Matthew's
+`/api/thread_sse_response_stream` had drifted to require a short-lived
+ticket from `/api/thread_sse_ticket`, and rejected the access token
+outright. Four header/query/cookie guesses failed before reading
+Matthew's own frontend bundle gave the answer. Two lessons worth keeping:
+a simulated backend only ever encodes what you already believe about an
+API, and for a reverse-engineered API the shipped frontend is the
+authoritative spec — see [[story-live-api-regression-test]].

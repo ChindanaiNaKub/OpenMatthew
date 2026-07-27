@@ -13,6 +13,20 @@
     "note": "",
     "verdict": "clear"
   },
+  "1482de715d44c7ed": {
+    "at": "2026-07-27",
+    "check": "presupposed-capability",
+    "fix": "",
+    "note": "",
+    "verdict": "clear"
+  },
+  "2302e0351a66654c": {
+    "at": "2026-07-27",
+    "check": "redundant-overlap",
+    "fix": "",
+    "note": "",
+    "verdict": "clear"
+  },
   "2d5b3a9fa5747fc6": {
     "at": "2026-07-27",
     "check": "presupposed-capability",
@@ -55,9 +69,23 @@
     "note": "",
     "verdict": "clear"
   },
+  "8474f584bdb03d3a": {
+    "at": "2026-07-27",
+    "check": "contradiction",
+    "fix": "",
+    "note": "",
+    "verdict": "clear"
+  },
   "aaf4e96db025fdec": {
     "at": "2026-07-27",
     "check": "redundant-overlap",
+    "fix": "",
+    "note": "",
+    "verdict": "clear"
+  },
+  "b64ba7ac135b8db0": {
+    "at": "2026-07-27",
+    "check": "copy-paste",
     "fix": "",
     "note": "",
     "verdict": "clear"
