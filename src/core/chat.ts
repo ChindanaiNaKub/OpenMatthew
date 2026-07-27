@@ -90,11 +90,18 @@ export async function handleStreaming(
   model: string,
 ): Promise<Response> {
   const sseUrl = `${apiBase}/api/thread_sse_response_stream?thread_id=${threadId}&token=${accessToken}`;
-  const upstream = await fetch(sseUrl);
+  const upstream = await fetch(sseUrl, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
 
   if (!upstream.ok || !upstream.body) {
+    const bodyText = await upstream.text().catch(() => "");
     return new Response(
-      JSON.stringify({ error: { message: "Failed to connect to Matthew SSE" } }),
+      JSON.stringify({
+        error: {
+          message: `Failed to connect to Matthew SSE (status ${upstream.status}): ${bodyText.slice(0, 300)}`,
+        },
+      }),
       { status: 502, headers: { "Content-Type": "application/json" } },
     );
   }
@@ -206,11 +213,18 @@ export async function handleNonStreaming(
   model: string,
 ): Promise<Response> {
   const sseUrl = `${apiBase}/api/thread_sse_response_stream?thread_id=${threadId}&token=${accessToken}`;
-  const upstream = await fetch(sseUrl);
+  const upstream = await fetch(sseUrl, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
 
   if (!upstream.ok) {
+    const bodyText = await upstream.text().catch(() => "");
     return new Response(
-      JSON.stringify({ error: { message: "Failed to connect to Matthew SSE" } }),
+      JSON.stringify({
+        error: {
+          message: `Failed to connect to Matthew SSE (status ${upstream.status}): ${bodyText.slice(0, 300)}`,
+        },
+      }),
       { status: 502, headers: { "Content-Type": "application/json" } },
     );
   }
