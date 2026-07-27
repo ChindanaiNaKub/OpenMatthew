@@ -19,9 +19,13 @@ Split the codebase into three layers:
 - `src/server/` — a standalone HTTP server built on `src/core/` that speaks
   OpenAI's `chat/completions` API. This is the integration point for any
   platform we haven't written a native adapter for.
-- `src/adapters/opencode/` — the existing `Plugin`/`Hooks` implementation,
-  rewritten as a thin wrapper over `src/core/`. Re-exported from the package
-  root (`index.ts`) exactly as today, so current consumers see no change.
+- The existing `Plugin`/`Hooks` implementation, rewritten as a thin wrapper
+  over `src/core/`, re-exported from the package root (`index.ts`) exactly
+  as today. In practice this stayed at `src/plugin.ts` rather than moving
+  to a `src/adapters/opencode/` directory — once the Matthew protocol logic
+  was extracted, what was left already was the thin adapter this decision
+  wanted; moving its file path added diff risk for no behavioral gain, so
+  the directory name in this decision is aspirational, not literal.
 
 ## Why, over the alternative
 
