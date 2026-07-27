@@ -132,34 +132,38 @@ without needing a Matthew-specific plugin written for that platform.
 > Matthew backend, but has not yet been smoke-tested against a real CMU
 > login. Treat it as early.
 
-**1. Run the server:**
+**1. Run the server** (in its own terminal — it stays running, you don't
+type into it):
 
 ```bash
 npm run serve
 # OpenMatthew server listening on http://127.0.0.1:4141
 ```
 
-**2. Build your credentials.** Log in through the OpenCode plugin once (see
-[Usage](#usage) above) to get your `accessToken`, `sessionToken`, and
-`defaultAssistantId` — or read them straight out of `localStorage.user` on
-matthew.cmu.ac.th the same way the plugin does. Then base64-encode them:
+**2. Get your token.** In a *second* terminal, run the credentials helper:
 
 ```bash
-echo -n '{"accessToken":"...","sessionToken":"...","assistantId":"..."}' | base64
+npm run creds
 ```
+
+It will ask you to paste something. Go log in at `https://matthew.cmu.ac.th`
+with your CMU account, open DevTools (F12) → **Console**, run
+`copy(localStorage.user)`, then paste that into the terminal running
+`npm run creds` and press Enter. It prints a ready-to-use bearer token —
+that's your credentials, reshaped and base64-encoded automatically.
 
 **3. Point your platform at it** — configure its custom OpenAI settings:
 
 | Setting | Value |
 |---------|-------|
 | Base URL | `http://127.0.0.1:4141/v1` |
-| API key | the base64 string from step 2 |
+| API key | the token `npm run creds` printed |
 
 Or call it directly:
 
 ```bash
 curl http://127.0.0.1:4141/v1/chat/completions \
-  -H "Authorization: Bearer <base64 credentials>" \
+  -H "Authorization: Bearer <token from npm run creds>" \
   -H "Content-Type: application/json" \
   -d '{"model":"matthew/gpt-5.2","messages":[{"role":"user","content":"Hello"}]}'
 ```

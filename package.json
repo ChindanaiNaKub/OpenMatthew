@@ -34,7 +34,8 @@
     "LICENSE"
   ],
   "bin": {
-    "openmatthew-serve": "./dist/src/server/bin.js"
+    "openmatthew-serve": "./dist/src/server/bin.js",
+    "openmatthew-creds": "./dist/src/server/creds.js"
   },
   "exports": {
     ".": {
@@ -48,6 +49,7 @@
     "lint": "tsc --noEmit",
     "test": "node --test dist/**/*.test.js",
     "serve": "npm run build && node dist/src/server/bin.js",
+    "creds": "npm run build && node dist/src/server/creds.js",
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
