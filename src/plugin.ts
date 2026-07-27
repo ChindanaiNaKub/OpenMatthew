@@ -5,10 +5,9 @@ import type { Plugin, Hooks } from "@opencode-ai/plugin";
 import {
   MATTHEW_PROVIDER_ID,
   MATTHEW_API_BASE,
-  MATTHEW_CLIENT_ID,
-  MATTHEW_REDIRECT_URI,
+  MATTHEW_LOGIN_URL,
 } from "./constants.js";
-import { authorizeMicrosoft } from "./oauth/microsoft.js";
+import { MATTHEW_MODELS } from "./core/models.js";
 import { loadAccounts, saveAccounts } from "./core/storage.js";
 import type { OpenAIChatRequest } from "./core/chat.js";
 import { handleMatthewChat } from "./core/chat.js";
@@ -21,53 +20,26 @@ function getOpenCodeConfigDir(): string {
   return join(xdgConfig, "opencode");
 }
 
-const MATTHEW_MODELS = {
-  "gpt-5.2": {
-    name: "GPT-5.2",
-    attachment: true,
-    reasoning: true,
-    temperature: true,
-    tool_call: true,
-    cost: { input: 0, output: 0 },
-    limit: { context: 128000, output: 16384 },
-  },
-  "gpt-5-mini": {
-    name: "GPT-5 Mini",
-    attachment: true,
-    reasoning: true,
-    temperature: true,
-    tool_call: true,
-    cost: { input: 0, output: 0 },
-    limit: { context: 128000, output: 16384 },
-  },
-  "gpt-4.1": {
-    name: "GPT-4.1",
-    attachment: true,
-    reasoning: false,
-    temperature: true,
-    tool_call: true,
-    cost: { input: 0, output: 0 },
-    limit: { context: 128000, output: 16384 },
-  },
-  "gpt-4o": {
-    name: "GPT-4o",
-    attachment: true,
-    reasoning: false,
-    temperature: true,
-    tool_call: true,
-    cost: { input: 0, output: 0 },
-    limit: { context: 128000, output: 16384 },
-  },
-  "gpt-4o-mini": {
-    name: "GPT-4o Mini",
-    attachment: true,
-    reasoning: false,
-    temperature: true,
-    tool_call: true,
-    cost: { input: 0, output: 0 },
-    limit: { context: 128000, output: 16384 },
-  },
-} as const;
+/**
+ * OpenCode's provider config wants more per-model detail than the core
+ * list carries. Everything except `reasoning` is identical across
+ * Matthew's models, and it's all free to CMU students.
+ */
+function openCodeModelConfig(): Record<string, Record<string, unknown>> {
+  const models: Record<string, Record<string, unknown>> = {};
+  for (const model of MATTHEW_MODELS) {
+    models[model.id] = {
+      name: model.name,
+      attachment: true,
+      reasoning: model.reasoning,
+      temperature: true,
+      tool_call: true,
+      cost: { input: 0, output: 0 },
+      limit: { context: 128000, output: 16384 },
+    };
+  }
+  return models;
+}
 
 function openBrowser(url: string): void {
   const cmd =
@@ -88,10 +60,7 @@ export const MatthewOAuthPlugin: Plugin = async () => {
       config.provider = config.provider ?? {};
       const existing = config.provider[MATTHEW_PROVIDER_ID] ?? {};
 
-      const defaultModels: Record<string, Record<string, unknown>> = {};
-      for (const [id, def] of Object.entries(MATTHEW_MODELS)) {
-        defaultModels[id] = { ...def };
-      }
+      const defaultModels = openCodeModelConfig();
 
       config.provider[MATTHEW_PROVIDER_ID] = {
         ...existing,
@@ -173,10 +142,10 @@ export const MatthewOAuthPlugin: Plugin = async () => {
           label: "Login with CMU Account",
 
           async authorize() {
-            openBrowser(MATTHEW_REDIRECT_URI);
+            openBrowser(MATTHEW_LOGIN_URL);
 
             return {
-              url: MATTHEW_REDIRECT_URI,
+              url: MATTHEW_LOGIN_URL,
               instructions:
                 "1. Login to matthew.cmu.ac.th with your CMU Account\n" +
                 "2. After login, press F12 → Console tab → paste this:\n" +

@@ -1,7 +1,7 @@
 {
   "name": "opencode-matthew-auth",
-  "version": "0.1.0",
-  "description": "CMU Matthew AI OAuth auth plugin for OpenCode - access GPT-4o using CMU credentials",
+  "version": "0.2.0",
+  "description": "Use your CMU Matthew AI account from any OpenAI-compatible agent platform, or as an OpenCode plugin",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "type": "module",
@@ -15,22 +15,13 @@
   "bugs": {
     "url": "https://github.com/ChindanaiNaKub/OpenMatthew/issues"
   },
-  "keywords": [
-    "opencode",
-    "matthew",
-    "cmu",
-    "oauth",
-    "plugin",
-    "auth",
-    "gpt-4o",
-    "chiang-mai-university"
-  ],
   "engines": {
     "node": ">=20.0.0"
   },
   "files": [
     "dist/",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "bin": {
@@ -62,5 +53,15 @@
   },
   "dependencies": {
     "@opencode-ai/plugin": "^0.15.30"
-  }
+  },
+  "keywords": [
+    "matthew",
+    "cmu",
+    "chiang-mai-university",
+    "openai-compatible",
+    "opencode",
+    "llm",
+    "proxy",
+    "agent"
+  ]
 }
