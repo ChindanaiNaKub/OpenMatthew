@@ -1,7 +1,5 @@
 import { promises as fs } from "node:fs";
-import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
 
 export interface AccountMetadata {
   accessToken: string;
@@ -19,22 +17,15 @@ export interface AccountStorage {
   activeIndex: number;
 }
 
-function getConfigDir(): string {
-  if (process.env.OPENCODE_CONFIG_DIR) {
-    return process.env.OPENCODE_CONFIG_DIR;
-  }
-  const xdgConfig =
-    process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(xdgConfig, "opencode");
+const STORAGE_FILE_NAME = "matthew-accounts.json";
+
+function getStoragePath(configDir: string): string {
+  return join(configDir, STORAGE_FILE_NAME);
 }
 
-function getStoragePath(): string {
-  return join(getConfigDir(), "matthew-accounts.json");
-}
-
-export async function loadAccounts(): Promise<AccountStorage | null> {
+export async function loadAccounts(configDir: string): Promise<AccountStorage | null> {
   try {
-    const path = getStoragePath();
+    const path = getStoragePath(configDir);
     const content = await fs.readFile(path, "utf-8");
     const data = JSON.parse(content) as AccountStorage;
 
@@ -56,20 +47,18 @@ export async function loadAccounts(): Promise<AccountStorage | null> {
   }
 }
 
-export async function saveAccounts(storage: AccountStorage): Promise<void> {
-  const path = getStoragePath();
-  const configDir = dirname(path);
-  await fs.mkdir(configDir, { recursive: true });
+export async function saveAccounts(configDir: string, storage: AccountStorage): Promise<void> {
+  const path = getStoragePath(configDir);
+  await fs.mkdir(dirname(path), { recursive: true });
   await fs.writeFile(path, JSON.stringify(storage, null, 2), {
     encoding: "utf-8",
     mode: 0o600,
   });
 }
 
-export async function clearAccounts(): Promise<void> {
+export async function clearAccounts(configDir: string): Promise<void> {
   try {
-    const path = getStoragePath();
-    await fs.unlink(path);
+    await fs.unlink(getStoragePath(configDir));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
