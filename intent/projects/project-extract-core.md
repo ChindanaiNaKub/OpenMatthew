@@ -2,7 +2,7 @@
 id: project-extract-core
 type: project
 title: Extract platform-agnostic core and standalone server
-status: draft
+status: active
 parent: goal-any-platform-access
 serves: []
 priority: p1

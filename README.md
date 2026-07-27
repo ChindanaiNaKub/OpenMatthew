@@ -119,6 +119,51 @@ javascript:void(navigator.clipboard.writeText(localStorage.user).then(()=>alert(
 
 Create a bookmark, name it "Copy Matthew Token", and paste the above as the URL. After logging into Matthew, just click the bookmark → paste into OpenCode.
 
+## Using Matthew from other agent platforms
+
+The OpenCode plugin above is the most polished way to use Matthew, but the
+underlying client isn't tied to OpenCode. `src/server/` runs a small
+standalone HTTP server that speaks OpenAI's `chat/completions` API — any
+platform that lets you point at a custom OpenAI-compatible base URL (Hermes
+Agent, thclaws, or anything else) can use your Matthew account through it,
+without needing a Matthew-specific plugin written for that platform.
+
+> **Status:** this path is exercised in automated tests against a simulated
+> Matthew backend, but has not yet been smoke-tested against a real CMU
+> login. Treat it as early.
+
+**1. Run the server:**
+
+```bash
+npm run serve
+# OpenMatthew server listening on http://127.0.0.1:4141
+```
+
+**2. Build your credentials.** Log in through the OpenCode plugin once (see
+[Usage](#usage) above) to get your `accessToken`, `sessionToken`, and
+`defaultAssistantId` — or read them straight out of `localStorage.user` on
+matthew.cmu.ac.th the same way the plugin does. Then base64-encode them:
+
+```bash
+echo -n '{"accessToken":"...","sessionToken":"...","assistantId":"..."}' | base64
+```
+
+**3. Point your platform at it** — configure its custom OpenAI settings:
+
+| Setting | Value |
+|---------|-------|
+| Base URL | `http://127.0.0.1:4141/v1` |
+| API key | the base64 string from step 2 |
+
+Or call it directly:
+
+```bash
+curl http://127.0.0.1:4141/v1/chat/completions \
+  -H "Authorization: Bearer <base64 credentials>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"matthew/gpt-5.2","messages":[{"role":"user","content":"Hello"}]}'
+```
+
 ## How it works
 
 ### Authentication Flow
