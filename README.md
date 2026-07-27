@@ -128,9 +128,9 @@ platform that lets you point at a custom OpenAI-compatible base URL (Hermes
 Agent, thclaws, or anything else) can use your Matthew account through it,
 without needing a Matthew-specific plugin written for that platform.
 
-> **Status:** this path is exercised in automated tests against a simulated
-> Matthew backend, but has not yet been smoke-tested against a real CMU
-> login. Treat it as early.
+> **Status:** verified end to end against a real CMU account — a live token
+> streams real replies through the server. Still young, so expect rough
+> edges, but the path works.
 
 **1. Run the server** (in its own terminal — it stays running, you don't
 type into it):
@@ -167,6 +167,36 @@ curl http://127.0.0.1:4141/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"matthew/gpt-5.2","messages":[{"role":"user","content":"Hello"}]}'
 ```
+
+### What the server supports
+
+| | |
+|---|---|
+| `POST /v1/chat/completions` | streaming and non-streaming |
+| `GET /v1/models` | model list, no auth required — many clients probe this before you've configured a key |
+| CORS + preflight | so browser-based platform UIs can connect |
+| Multi-turn & system prompts | the full conversation is forwarded, not just your last message |
+
+**The `model` you request is ignored.** Matthew ties the model to your
+*assistant*, not to the request — the chat API carries no model field at
+all. Whatever your default assistant is set to on
+[matthew.cmu.ac.th](https://matthew.cmu.ac.th) is what answers, no matter
+what you put in `model`. Change it in Matthew's own settings, not here.
+
+Every request opens a fresh Matthew thread, so conversation state lives in
+the messages your client sends rather than on Matthew's side.
+
+### When something breaks
+
+Matthew's API is undocumented and changes without notice. To check whether
+it has drifted out from under this client:
+
+```bash
+npm run check-api
+```
+
+It reads Matthew's own frontend bundle — the only authoritative description
+of the protocol — and reports which of our assumptions no longer hold.
 
 ## How it works
 

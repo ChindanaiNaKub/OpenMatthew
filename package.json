@@ -47,10 +47,11 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
-    "test": "node --test dist/**/*.test.js",
+    "test": "tsc -p tsconfig.test.json && node --test \"dist-test/**/*.test.js\"",
     "serve": "npm run build && node dist/src/server/bin.js",
     "creds": "npm run build && node dist/src/server/creds.js",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "check-api": "node scripts/check-api.mjs"
   },
   "peerDependencies": {
     "typescript": "^5"

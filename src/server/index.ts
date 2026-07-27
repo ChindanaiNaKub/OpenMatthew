@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse, Server } from "node:http";
 import { MATTHEW_API_BASE } from "../constants.js";
 import { handleMatthewChat } from "../core/chat.js";
 import type { OpenAIChatRequest } from "../core/chat.js";
+import { toOpenAIModelList } from "../core/models.js";
 
 /**
  * Standalone OpenAI-compatible server over the Matthew core.
@@ -66,9 +67,23 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf-8");
 }
 
+/**
+ * Permissive CORS, because a browser-based platform UI cannot reach this
+ * server at all without it — the preflight fails before our handler ever
+ * runs. Safe enough here: the server binds to loopback by default and holds
+ * no credentials of its own, since callers supply their own token per
+ * request.
+ */
+const CORS_HEADERS: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Authorization, Content-Type",
+  "Access-Control-Max-Age": "86400",
+};
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json" });
+  res.writeHead(status, { "Content-Type": "application/json", ...CORS_HEADERS });
   res.end(payload);
 }
 
@@ -77,7 +92,7 @@ async function pipeWebResponse(webResponse: Response, res: ServerResponse): Prom
   webResponse.headers.forEach((value, key) => {
     headers[key] = value;
   });
-  res.writeHead(webResponse.status, headers);
+  res.writeHead(webResponse.status, { ...headers, ...CORS_HEADERS });
 
   if (!webResponse.body) {
     res.end();
@@ -106,7 +121,23 @@ export function createMatthewServer(options: ServerOptions = {}): Server {
         return;
       }
 
+      if (req.method === "OPTIONS") {
+        res.writeHead(204, CORS_HEADERS);
+        res.end();
+        return;
+      }
+
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+
+      // Many OpenAI clients enumerate models before letting you pick one,
+      // and show an empty or broken picker if this 404s. It needs no auth:
+      // the list is static, and requiring a token here just breaks clients
+      // that probe the endpoint before they are configured.
+      if (req.method === "GET" && (url.pathname === "/v1/models" || url.pathname === "/models")) {
+        sendJson(res, 200, toOpenAIModelList());
+        return;
+      }
+
       const isChatCompletions =
         url.pathname === "/v1/chat/completions" || url.pathname === "/chat/completions";
 

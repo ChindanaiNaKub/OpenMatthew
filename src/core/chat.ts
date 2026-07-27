@@ -5,15 +5,70 @@
  * back into OpenAI's chat/completions shape. No host-platform dependency.
  */
 
+import { randomUUID } from "node:crypto";
+
 export interface OpenAIMessage {
   role: string;
   content: string;
+}
+
+/**
+ * OpenAI responses carry an `id`/`object`/`created` envelope around the
+ * choices. Plenty of clients and SDKs validate those fields and reject a
+ * payload without them, so every response has to be wrapped even though
+ * Matthew supplies none of it.
+ */
+function newCompletionId(): string {
+  return `chatcmpl-${randomUUID().replace(/-/g, "")}`;
+}
+
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
 }
 
 export interface OpenAIChatRequest {
   model: string;
   messages: OpenAIMessage[];
   stream?: boolean;
+}
+
+/**
+ * Flatten an OpenAI conversation into the single message Matthew accepts.
+ *
+ * Matthew keeps conversation state server-side per thread, but every
+ * request here opens a fresh thread (`thread_id: "newchat"`), and OpenAI
+ * clients are stateless — they resend the whole conversation each turn. So
+ * the history has to travel inside the message body, or the system prompt
+ * and every prior turn are silently lost.
+ */
+export function serializeConversation(messages: OpenAIMessage[]): string {
+  if (messages.length === 0) return "";
+
+  const lastIndex = messages.length - 1;
+  const last = messages[lastIndex];
+
+  // A lone user message is the common case — send it verbatim so simple
+  // requests reach Matthew looking exactly like a person typed them.
+  if (messages.length === 1 && last?.role === "user") {
+    return last.content;
+  }
+
+  const transcript = messages.slice(0, lastIndex).map((message) => {
+    const label =
+      message.role === "system"
+        ? "Instructions"
+        : message.role === "assistant"
+          ? "Assistant"
+          : "User";
+    return `${label}: ${message.content}`;
+  });
+
+  const trailer =
+    last?.role === "user"
+      ? `User: ${last.content}\n\nRespond to the final User message above.`
+      : `${last?.role === "assistant" ? "Assistant" : "Instructions"}: ${last?.content ?? ""}\n\nContinue.`;
+
+  return [...transcript, trailer].join("\n\n");
 }
 
 export async function handleMatthewChat(
@@ -24,10 +79,7 @@ export async function handleMatthewChat(
   apiBase: string,
   clientName = "OpenMatthew",
 ): Promise<Response> {
-  const lastUserMsg = [...body.messages]
-    .reverse()
-    .find((m) => m.role === "user");
-  const messageText = lastUserMsg?.content || "";
+  const messageText = serializeConversation(body.messages ?? []);
 
   const formData = new FormData();
   formData.append("token", sessionToken);
@@ -166,12 +218,22 @@ export async function handleStreaming(
   const decoder = new TextDecoder();
   let buffer = "";
   const encoder = new TextEncoder();
+  const completionId = newCompletionId();
+  const created = nowSeconds();
+
+  const chunk = (choices: unknown[]): string =>
+    formatOpenAISSE({
+      id: completionId,
+      object: "chat.completion.chunk",
+      created,
+      model,
+      choices,
+    });
 
   function enqueueFinish(controller: ReadableStreamDefaultController) {
-    controller.enqueue(encoder.encode(formatOpenAISSE({
-      choices: [{ delta: {}, finish_reason: "stop", index: 0 }],
-      model,
-    })));
+    controller.enqueue(encoder.encode(chunk([
+      { delta: {}, finish_reason: "stop", index: 0 },
+    ])));
     controller.enqueue(encoder.encode("data: [DONE]\n\n"));
     controller.close();
   }
@@ -206,10 +268,9 @@ export async function handleStreaming(
           if (currentEvent === "error") {
             const jsonStr = line.startsWith("data:") ? line.slice(5).trim() : "";
             const errMsg = jsonStr ? jsonStr : "Stream error";
-            controller.enqueue(encoder.encode(formatOpenAISSE({
-              choices: [{ delta: { content: `\n[Error: ${errMsg}]` }, finish_reason: "stop", index: 0 }],
-              model,
-            })));
+            controller.enqueue(encoder.encode(chunk([
+              { delta: { content: `\n[Error: ${errMsg}]` }, finish_reason: "stop", index: 0 },
+            ])));
             controller.enqueue(encoder.encode("data: [DONE]\n\n"));
             controller.close();
             return;
@@ -227,14 +288,13 @@ export async function handleStreaming(
             try {
               const data = JSON.parse(jsonStr) as { message?: string };
               if (data.message) {
-                controller.enqueue(encoder.encode(formatOpenAISSE({
-                  choices: [{
+                controller.enqueue(encoder.encode(chunk([
+                  {
                     delta: { content: data.message, role: "assistant" },
                     finish_reason: null,
                     index: 0,
-                  }],
-                  model,
-                })));
+                  },
+                ])));
               }
             } catch {
               // skip non-JSON
@@ -300,12 +360,15 @@ export async function handleNonStreaming(
 
   return new Response(
     JSON.stringify({
+      id: newCompletionId(),
+      object: "chat.completion",
+      created: nowSeconds(),
+      model,
       choices: [{
         message: { role: "assistant", content: fullContent },
         finish_reason: "stop",
         index: 0,
       }],
-      model,
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     }),
     { status: 200, headers: { "Content-Type": "application/json" } },

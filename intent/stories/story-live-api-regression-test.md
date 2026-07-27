@@ -2,7 +2,7 @@
 id: story-live-api-regression-test
 type: story
 title: Commit tests for the Matthew protocol, and detect API drift early
-status: draft
+status: done
 parent: project-extract-core
 serves: []
 priority: p2
@@ -30,16 +30,16 @@ in it.
 
 ## Acceptance
 
-- [ ] `npm test` runs real tests and fails if the OpenAI-shape transform
+- [x] `npm test` runs real tests and fails if the OpenAI-shape transform
       (thread create → ticket → SSE → `chat/completions`) breaks
-- [ ] the simulated backend enforces the ticket exchange, so reverting the
+- [x] the simulated backend enforces the ticket exchange, so reverting the
       ticket fix makes the suite fail
-- [ ] a separate command (not part of `npm test`, since it needs network
+- [x] a separate command (not part of `npm test`, since it needs network
       and will break when CMU is down) fetches
       `matthew.cmu.ac.th/static/js/main.*.js` and reports whether
       `thread_sse_ticket`, `thread_sse_message`, and the `ticket=` stream
       parameter are still present
-- [ ] the drift check discovers the bundle filename rather than hardcoding
+- [x] the drift check discovers the bundle filename rather than hardcoding
       it — it changed from `main.cfe9534d.js` to `main.fa03f287.js` between
       AGENTS.md being written and this work
 
@@ -50,3 +50,8 @@ third party being up and on a bundle we don't control, so wiring it into
 the normal test path would make the suite flaky for a failure mode that
 isn't ours. It's a diagnostic to run when something breaks, and a candidate
 for a scheduled run later.
+
+Shipped as `npm run check-api` (`scripts/check-api.mjs`), and it passes
+against the live API today. Tests needed their own tsconfig
+(`tsconfig.test.json` → gitignored `dist-test/`) because the publish build
+excludes `*.test.ts` and shouldn't ship tests to npm.
