@@ -6,10 +6,45 @@
  */
 
 import { randomUUID } from "node:crypto";
+import {
+  buildToolInstructions,
+  formatToolCall,
+  parseToolCalls,
+  toolCallDeltas,
+  toolNames,
+} from "./tools.js";
+import type { OpenAITool, OpenAIToolCall, ToolChoice } from "./tools.js";
+
+/**
+ * OpenAI allows `content` to be a string, a list of typed parts, or null
+ * on an assistant turn that only carries tool calls. Clients that use
+ * tools tend to send the list form, so all three have to survive the trip
+ * into Matthew's single string field.
+ */
+export type OpenAIContentPart = { type?: string; text?: string };
 
 export interface OpenAIMessage {
   role: string;
-  content: string;
+  content?: string | OpenAIContentPart[] | null;
+  /** Present on `role: "tool"`, naming the call this answers. */
+  tool_call_id?: string;
+  /** The tool's own name, on some clients. */
+  name?: string;
+  /** Present on an assistant turn that called tools. */
+  tool_calls?: OpenAIToolCall[];
+}
+
+/** Flatten any of the three `content` shapes into plain text. */
+export function messageText(message: OpenAIMessage | undefined): string {
+  const content = message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => (typeof part?.text === "string" ? part.text : ""))
+      .filter(Boolean)
+      .join("\n");
+  }
+  return "";
 }
 
 /**
@@ -30,6 +65,8 @@ export interface OpenAIChatRequest {
   model: string;
   messages: OpenAIMessage[];
   stream?: boolean;
+  tools?: OpenAITool[];
+  tool_choice?: ToolChoice;
 }
 
 /**
@@ -50,25 +87,49 @@ export function serializeConversation(messages: OpenAIMessage[]): string {
   // A lone user message is the common case — send it verbatim so simple
   // requests reach Matthew looking exactly like a person typed them.
   if (messages.length === 1 && last?.role === "user") {
-    return last.content;
+    return messageText(last);
   }
 
-  const transcript = messages.slice(0, lastIndex).map((message) => {
-    const label =
-      message.role === "system"
-        ? "Instructions"
-        : message.role === "assistant"
-          ? "Assistant"
-          : "User";
-    return `${label}: ${message.content}`;
-  });
+  // A tool result names the call it answers by id, not by name, so the
+  // names have to come from the assistant turn that made the call. Without
+  // this the model sees an unlabelled blob of output and has to guess
+  // which of its calls produced it.
+  const callNames = new Map<string, string>();
+  for (const message of messages) {
+    for (const call of message.tool_calls ?? []) {
+      if (call?.id && call.function?.name) callNames.set(call.id, call.function.name);
+    }
+  }
 
-  const trailer =
+  const render = (message: OpenAIMessage | undefined): string => {
+    if (!message) return "";
+    const text = messageText(message);
+
+    if (message.role === "tool") {
+      const name = message.name || callNames.get(message.tool_call_id ?? "") || "tool";
+      return `Tool result (${name}): ${text}`;
+    }
+
+    if (message.role === "assistant") {
+      const calls = (message.tool_calls ?? []).map(formatToolCall);
+      const body = [text, ...calls].filter(Boolean).join("\n");
+      return `Assistant: ${body}`;
+    }
+
+    const label = message.role === "system" ? "Instructions" : "User";
+    return `${label}: ${text}`;
+  };
+
+  const transcript = messages.slice(0, lastIndex).map(render);
+
+  const closing =
     last?.role === "user"
-      ? `User: ${last.content}\n\nRespond to the final User message above.`
-      : `${last?.role === "assistant" ? "Assistant" : "Instructions"}: ${last?.content ?? ""}\n\nContinue.`;
+      ? "Respond to the final User message above."
+      : last?.role === "tool"
+        ? "Continue, using the tool result above."
+        : "Continue.";
 
-  return [...transcript, trailer].join("\n\n");
+  return [...transcript, `${render(last)}\n\n${closing}`].join("\n\n");
 }
 
 export async function handleMatthewChat(
@@ -79,11 +140,20 @@ export async function handleMatthewChat(
   apiBase: string,
   clientName = "OpenMatthew",
 ): Promise<Response> {
-  const messageText = serializeConversation(body.messages ?? []);
+  // Matthew has no tool slot, so the schemas ride in front of the
+  // conversation as prompt text. A null block means tools were not offered
+  // (or were declined with `tool_choice: "none"`), which is also what stops
+  // the reply from being searched for calls.
+  const toolBlock = buildToolInstructions(body.tools, body.tool_choice);
+  const conversation = serializeConversation(body.messages ?? []);
+  const messageBody = toolBlock
+    ? `${toolBlock}\n\n# Conversation\n\n${conversation}`
+    : conversation;
+  const allowedTools = toolBlock ? toolNames(body.tools) : null;
 
   const formData = new FormData();
   formData.append("token", sessionToken);
-  formData.append("message", messageText);
+  formData.append("message", messageBody);
   formData.append("thread_id", "newchat");
   formData.append("tid", "newchat");
   formData.append("aid", assistantId);
@@ -129,10 +199,10 @@ export async function handleMatthewChat(
   }
 
   if (body.stream === false) {
-    return handleNonStreaming(threadId, accessToken, apiBase, body.model);
+    return handleNonStreaming(threadId, accessToken, apiBase, body.model, allowedTools);
   }
 
-  return handleStreaming(threadId, accessToken, apiBase, body.model);
+  return handleStreaming(threadId, accessToken, apiBase, body.model, allowedTools);
 }
 
 /**
@@ -196,7 +266,16 @@ export async function handleStreaming(
   accessToken: string,
   apiBase: string,
   model: string,
+  allowedTools?: string[] | null,
 ): Promise<Response> {
+  // A tool call is not recognisable until its closing tag arrives, so when
+  // tools are in play the whole reply is read before anything is emitted.
+  // Streaming content out and retracting it once a call turns up is not
+  // expressible in OpenAI's wire format.
+  if (allowedTools) {
+    return streamBuffered(threadId, accessToken, apiBase, model, allowedTools);
+  }
+
   const built = await buildStreamUrl(threadId, accessToken, apiBase);
   if ("error" in built) return built.error;
 
@@ -322,33 +401,11 @@ export async function handleStreaming(
   });
 }
 
-export async function handleNonStreaming(
-  threadId: string,
-  accessToken: string,
-  apiBase: string,
-  model: string,
-): Promise<Response> {
-  const built = await buildStreamUrl(threadId, accessToken, apiBase);
-  if ("error" in built) return built.error;
-
-  const upstream = await fetch(built.url);
-
-  if (!upstream.ok) {
-    const bodyText = await upstream.text().catch(() => "");
-    return new Response(
-      JSON.stringify({
-        error: {
-          message: `Failed to connect to Matthew SSE (status ${upstream.status}): ${bodyText.slice(0, 300)}`,
-        },
-      }),
-      { status: 502, headers: { "Content-Type": "application/json" } },
-    );
-  }
-
-  const text = await upstream.text();
+/** Concatenate the `message` fields out of a whole Matthew SSE body. */
+function collectSseText(sseBody: string): string {
   let fullContent = "";
 
-  for (const line of text.split("\n")) {
+  for (const line of sseBody.split("\n")) {
     if (!line.startsWith("data:")) continue;
     try {
       const data = JSON.parse(line.slice(5).trim()) as { message?: string };
@@ -358,6 +415,124 @@ export async function handleNonStreaming(
     }
   }
 
+  return fullContent;
+}
+
+/**
+ * Read Matthew's stream to the end and hand back its text. Shared by the
+ * non-streaming path and by streaming-with-tools, which both need the
+ * complete reply before they can answer.
+ */
+async function readWholeReply(
+  threadId: string,
+  accessToken: string,
+  apiBase: string,
+): Promise<{ text: string } | { error: Response }> {
+  const built = await buildStreamUrl(threadId, accessToken, apiBase);
+  if ("error" in built) return built;
+
+  const upstream = await fetch(built.url);
+
+  if (!upstream.ok) {
+    const bodyText = await upstream.text().catch(() => "");
+    return {
+      error: new Response(
+        JSON.stringify({
+          error: {
+            message: `Failed to connect to Matthew SSE (status ${upstream.status}): ${bodyText.slice(0, 300)}`,
+          },
+        }),
+        { status: 502, headers: { "Content-Type": "application/json" } },
+      ),
+    };
+  }
+
+  return { text: collectSseText(await upstream.text()) };
+}
+
+/** Emit an already-complete reply as a short OpenAI SSE stream. */
+async function streamBuffered(
+  threadId: string,
+  accessToken: string,
+  apiBase: string,
+  model: string,
+  allowedTools: string[],
+): Promise<Response> {
+  const reply = await readWholeReply(threadId, accessToken, apiBase);
+  if ("error" in reply) return reply.error;
+
+  const { content, toolCalls } = parseToolCalls(reply.text, allowedTools);
+  const envelope = {
+    id: newCompletionId(),
+    object: "chat.completion.chunk",
+    created: nowSeconds(),
+    model,
+  };
+
+  const parts: string[] = [
+    formatOpenAISSE({
+      ...envelope,
+      choices: [{ delta: { role: "assistant" }, finish_reason: null, index: 0 }],
+    }),
+  ];
+
+  if (content) {
+    parts.push(
+      formatOpenAISSE({
+        ...envelope,
+        choices: [{ delta: { content }, finish_reason: null, index: 0 }],
+      }),
+    );
+  }
+
+  if (toolCalls.length > 0) {
+    parts.push(
+      formatOpenAISSE({
+        ...envelope,
+        choices: [
+          { delta: { tool_calls: toolCallDeltas(toolCalls) }, finish_reason: null, index: 0 },
+        ],
+      }),
+    );
+  }
+
+  parts.push(
+    formatOpenAISSE({
+      ...envelope,
+      choices: [
+        { delta: {}, finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop", index: 0 },
+      ],
+    }),
+    "data: [DONE]\n\n",
+  );
+
+  return new Response(parts.join(""), {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
+}
+
+export async function handleNonStreaming(
+  threadId: string,
+  accessToken: string,
+  apiBase: string,
+  model: string,
+  allowedTools?: string[] | null,
+): Promise<Response> {
+  const reply = await readWholeReply(threadId, accessToken, apiBase);
+  if ("error" in reply) return reply.error;
+
+  const { content, toolCalls } = allowedTools
+    ? parseToolCalls(reply.text, allowedTools)
+    : { content: reply.text, toolCalls: [] as OpenAIToolCall[] };
+
+  const message: Record<string, unknown> = { role: "assistant", content };
+  if (toolCalls.length > 0) message.tool_calls = toolCalls;
+
   return new Response(
     JSON.stringify({
       id: newCompletionId(),
@@ -365,8 +540,8 @@ export async function handleNonStreaming(
       created: nowSeconds(),
       model,
       choices: [{
-        message: { role: "assistant", content: fullContent },
-        finish_reason: "stop",
+        message,
+        finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop",
         index: 0,
       }],
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
