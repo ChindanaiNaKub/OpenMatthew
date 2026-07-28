@@ -102,6 +102,8 @@ Send a normal OpenAI request with `tools` and you get a normal OpenAI response w
 
 `tool_choice` (`none` / `auto` / `required` / a named function), several calls in one reply, and `role: "tool"` results on the next turn all work. The parser also accepts a fenced ` ```json ` block or a bare JSON object, because a prompted model follows a format roughly rather than exactly.
 
+Matthew has tools of its own, separately — `run_data_analysis` and `generate_document`, which its web UI runs in your browser. Those cannot work through an API proxy, so the server declines them and tells the model to answer without them. Before it did that, an assistant with those tools enabled would hang mid-reply, because Matthew sends nothing more until a tool call is answered.
+
 Two consequences worth knowing before you point an agent at this:
 
 - **It is less reliable than a real tool-calling API.** Sometimes the model describes the call instead of emitting it, and that turn is lost. Agents that retry a malformed step cope fine; agents that hard-fail may not. A tool name that wasn't offered is treated as prose rather than called.
