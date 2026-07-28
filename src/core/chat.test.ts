@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
-import { handleMatthewChat, serializeConversation } from "./chat.js";
+import { collectSseBody, handleMatthewChat, serializeConversation } from "./chat.js";
 
 /**
  * A stand-in for Matthew that enforces the parts of its protocol we
@@ -20,7 +20,12 @@ interface FakeMatthew {
 }
 
 async function startFakeMatthew(
-  options: { ticketStatus?: number; reply?: string[] } = {},
+  options: {
+    ticketStatus?: number;
+    reply?: string[];
+    /** Emitted as Matthew's own `ptoken`/`ctoken` events. */
+    usage?: { prompt: number; completion: number };
+  } = {},
 ): Promise<FakeMatthew> {
   let sentFields: Record<string, string> = {};
   let streamUrl = "";
@@ -73,6 +78,11 @@ async function startFakeMatthew(
         res.writeHead(200, { "Content-Type": "text/event-stream" });
         for (const chunk of options.reply ?? ["Hel", "lo"]) {
           res.write(`data: ${JSON.stringify({ message: chunk })}\n\n`);
+        }
+        if (options.usage) {
+          // Bare integers on their own events, the way Matthew sends them.
+          res.write(`event: ptoken\ndata: ${options.usage.prompt}\n\n`);
+          res.write(`event: ctoken\ndata: ${options.usage.completion}\n\n`);
         }
         res.write("event: complete\ndata: {}\n\n");
         res.end();
@@ -416,4 +426,109 @@ test("neither injects nor parses when tool_choice is none", async () => {
   } finally {
     await fake.close();
   }
+});
+
+// Matthew streams token counts as `ptoken`/`ctoken` events carrying bare
+// integers. They used to fall through the reader, which is why every reply
+// claimed zero tokens.
+test("reports the token counts Matthew streamed", async () => {
+  const fake = await startFakeMatthew({ usage: { prompt: 120, completion: 45 } });
+  try {
+    const body = (await chat(fake, {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "hi" }],
+      stream: false,
+    }).then((r) => r.json())) as {
+      usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+      choices: Array<{ message: { content: string } }>;
+    };
+
+    assert.deepEqual(body.usage, {
+      prompt_tokens: 120,
+      completion_tokens: 45,
+      total_tokens: 165,
+    });
+    // The counts must not be mistaken for reply text.
+    assert.equal(body.choices[0]?.message.content, "Hello");
+  } finally {
+    await fake.close();
+  }
+});
+
+test("sends a usage chunk when the client asks for one", async () => {
+  const fake = await startFakeMatthew({ usage: { prompt: 10, completion: 3 } });
+  try {
+    const text = await chat(fake, {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "hi" }],
+      stream_options: { include_usage: true },
+    }).then((r) => r.text());
+
+    const usageLine = text
+      .split("\n")
+      .filter((l) => l.startsWith("data: {"))
+      .map((l) => JSON.parse(l.slice(6)) as { usage?: unknown; choices: unknown[] })
+      .find((c) => c.usage);
+
+    assert.deepEqual(usageLine?.usage, {
+      prompt_tokens: 10,
+      completion_tokens: 3,
+      total_tokens: 13,
+    });
+    // Empty choices, so clients that ignore usage see no phantom delta.
+    assert.deepEqual(usageLine?.choices, []);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("omits the usage chunk when the client did not ask", async () => {
+  const fake = await startFakeMatthew({ usage: { prompt: 10, completion: 3 } });
+  try {
+    const text = await chat(fake, {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "hi" }],
+    }).then((r) => r.text());
+
+    assert.doesNotMatch(text, /"usage"/);
+    assert.match(text, /"content":"Hel"/);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("reports usage on the buffered tool path too", async () => {
+  const fake = await startFakeMatthew({
+    reply: ['<tool_call>{"name":"run","arguments":{}}</tool_call>'],
+    usage: { prompt: 7, completion: 2 },
+  });
+  try {
+    const text = await chat(fake, {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "go" }],
+      tools: [{ type: "function", function: { name: "run" } }],
+      stream_options: { include_usage: true },
+    }).then((r) => r.text());
+
+    assert.match(text, /"total_tokens":9/);
+    assert.match(text, /"finish_reason":"tool_calls"/);
+  } finally {
+    await fake.close();
+  }
+});
+
+// An SSE frame can be split across reads. If the event name is forgotten
+// in between, a bare integer gets parsed as though it were reply text.
+test("keeps the event name across a split frame", () => {
+  const { text, usage } = collectSseBody(
+    'data: {"message":"hi"}\n\nevent: ptoken\ndata: 99\n\nevent: ctoken\ndata: 1\n\n',
+  );
+
+  assert.equal(text, "hi");
+  assert.deepEqual(usage, { prompt: 99, completion: 1 });
+});
+
+test("ignores a token count that is not a number", () => {
+  const { usage } = collectSseBody("event: ptoken\ndata: not-a-number\n\n");
+  assert.deepEqual(usage, { prompt: 0, completion: 0 });
 });

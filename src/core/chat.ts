@@ -67,6 +67,47 @@ export interface OpenAIChatRequest {
   stream?: boolean;
   tools?: OpenAITool[];
   tool_choice?: ToolChoice;
+  /** `{include_usage: true}` asks for a usage chunk before `[DONE]`. */
+  stream_options?: { include_usage?: boolean };
+}
+
+/**
+ * Matthew reports token counts as their own SSE events rather than in the
+ * message payload — `ptoken` for the prompt, `ctoken` for the completion,
+ * each carrying a bare integer that the caller accumulates.
+ */
+export interface StreamUsage {
+  prompt: number;
+  completion: number;
+}
+
+function newUsage(): StreamUsage {
+  return { prompt: 0, completion: 0 };
+}
+
+function addTokenCount(usage: StreamUsage, event: string, data: string): void {
+  const count = Number.parseInt(data, 10);
+  if (!Number.isFinite(count) || count < 0) return;
+  if (event === "ptoken") usage.prompt += count;
+  else usage.completion += count;
+}
+
+function usageBlock(usage: StreamUsage): Record<string, number> {
+  return {
+    prompt_tokens: usage.prompt,
+    completion_tokens: usage.completion,
+    total_tokens: usage.prompt + usage.completion,
+  };
+}
+
+/**
+ * The usage chunk OpenAI sends just before `[DONE]`, and only when the
+ * client asked for it with `stream_options: {include_usage: true}`. It
+ * carries an empty `choices` array — a client that ignores usage must not
+ * see a phantom delta at the end of the stream.
+ */
+function usageChunk(envelope: Record<string, unknown>, usage: StreamUsage): string {
+  return formatOpenAISSE({ ...envelope, choices: [], usage: usageBlock(usage) });
 }
 
 /**
@@ -202,7 +243,14 @@ export async function handleMatthewChat(
     return handleNonStreaming(threadId, accessToken, apiBase, body.model, allowedTools);
   }
 
-  return handleStreaming(threadId, accessToken, apiBase, body.model, allowedTools);
+  return handleStreaming(
+    threadId,
+    accessToken,
+    apiBase,
+    body.model,
+    allowedTools,
+    body.stream_options?.include_usage === true,
+  );
 }
 
 /**
@@ -267,13 +315,14 @@ export async function handleStreaming(
   apiBase: string,
   model: string,
   allowedTools?: string[] | null,
+  includeUsage = false,
 ): Promise<Response> {
   // A tool call is not recognisable until its closing tag arrives, so when
   // tools are in play the whole reply is read before anything is emitted.
   // Streaming content out and retracting it once a call turns up is not
   // expressible in OpenAI's wire format.
   if (allowedTools) {
-    return streamBuffered(threadId, accessToken, apiBase, model, allowedTools);
+    return streamBuffered(threadId, accessToken, apiBase, model, allowedTools, includeUsage);
   }
 
   const built = await buildStreamUrl(threadId, accessToken, apiBase);
@@ -300,19 +349,28 @@ export async function handleStreaming(
   const completionId = newCompletionId();
   const created = nowSeconds();
 
-  const chunk = (choices: unknown[]): string =>
-    formatOpenAISSE({
-      id: completionId,
-      object: "chat.completion.chunk",
-      created,
-      model,
-      choices,
-    });
+  const envelope = {
+    id: completionId,
+    object: "chat.completion.chunk",
+    created,
+    model,
+  };
+
+  const chunk = (choices: unknown[]): string => formatOpenAISSE({ ...envelope, choices });
+
+  const usage = newUsage();
+
+  // Hoisted out of `pull` deliberately. An SSE frame can be split across
+  // reads — `event: ctoken` arriving in one chunk and its `data:` line in
+  // the next — and a per-read variable loses the event name in between,
+  // silently misfiling the payload.
+  let currentEvent = "";
 
   function enqueueFinish(controller: ReadableStreamDefaultController) {
     controller.enqueue(encoder.encode(chunk([
       { delta: {}, finish_reason: "stop", index: 0 },
     ])));
+    if (includeUsage) controller.enqueue(encoder.encode(usageChunk(envelope, usage)));
     controller.enqueue(encoder.encode("data: [DONE]\n\n"));
     controller.close();
   }
@@ -330,8 +388,6 @@ export async function handleStreaming(
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
-
-        let currentEvent = "";
 
         for (const line of lines) {
           if (line.startsWith("event:")) {
@@ -362,6 +418,15 @@ export async function handleStreaming(
 
           const jsonStr = line.slice(5).trim();
           if (!jsonStr) continue;
+
+          // Matthew reports token counts as bare integers on their own
+          // events. These were being dropped, which is why every reply
+          // used to claim zero tokens.
+          if (currentEvent === "ptoken" || currentEvent === "ctoken") {
+            addTokenCount(usage, currentEvent, jsonStr);
+            currentEvent = "";
+            continue;
+          }
 
           if (currentEvent === "" || currentEvent === "message") {
             try {
@@ -401,21 +466,50 @@ export async function handleStreaming(
   });
 }
 
-/** Concatenate the `message` fields out of a whole Matthew SSE body. */
-function collectSseText(sseBody: string): string {
-  let fullContent = "";
+/**
+ * Walk a whole Matthew SSE body, collecting the reply text and the token
+ * counts. Event-aware, because `ptoken`/`ctoken` carry a bare integer
+ * rather than the JSON envelope `message` events use — reading data lines
+ * without tracking which event they belong to cannot tell them apart.
+ */
+export function collectSseBody(sseBody: string): { text: string; usage: StreamUsage } {
+  let text = "";
+  const usage = newUsage();
+  let currentEvent = "";
 
-  for (const line of sseBody.split("\n")) {
-    if (!line.startsWith("data:")) continue;
-    try {
-      const data = JSON.parse(line.slice(5).trim()) as { message?: string };
-      if (data.message) fullContent += data.message;
-    } catch {
-      // skip
+  for (const rawLine of sseBody.split("\n")) {
+    const line = rawLine.trimEnd();
+
+    if (line.startsWith("event:")) {
+      currentEvent = line.slice(6).trim();
+      continue;
+    }
+
+    if (!line.startsWith("data:")) {
+      // A blank line terminates the frame; anything else is a field we
+      // don't use (`id:`, `retry:`) and must not reset the event.
+      if (line === "") currentEvent = "";
+      continue;
+    }
+
+    const data = line.slice(5).trim();
+
+    if (currentEvent === "ptoken" || currentEvent === "ctoken") {
+      addTokenCount(usage, currentEvent, data);
+      continue;
+    }
+
+    if (currentEvent === "" || currentEvent === "message") {
+      try {
+        const parsed = JSON.parse(data) as { message?: string };
+        if (parsed.message) text += parsed.message;
+      } catch {
+        // skip non-JSON
+      }
     }
   }
 
-  return fullContent;
+  return { text, usage };
 }
 
 /**
@@ -427,7 +521,7 @@ async function readWholeReply(
   threadId: string,
   accessToken: string,
   apiBase: string,
-): Promise<{ text: string } | { error: Response }> {
+): Promise<{ text: string; usage: StreamUsage } | { error: Response }> {
   const built = await buildStreamUrl(threadId, accessToken, apiBase);
   if ("error" in built) return built;
 
@@ -447,7 +541,7 @@ async function readWholeReply(
     };
   }
 
-  return { text: collectSseText(await upstream.text()) };
+  return collectSseBody(await upstream.text());
 }
 
 /** Emit an already-complete reply as a short OpenAI SSE stream. */
@@ -457,6 +551,7 @@ async function streamBuffered(
   apiBase: string,
   model: string,
   allowedTools: string[],
+  includeUsage: boolean,
 ): Promise<Response> {
   const reply = await readWholeReply(threadId, accessToken, apiBase);
   if ("error" in reply) return reply.error;
@@ -503,8 +598,11 @@ async function streamBuffered(
         { delta: {}, finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop", index: 0 },
       ],
     }),
-    "data: [DONE]\n\n",
   );
+
+  if (includeUsage) parts.push(usageChunk(envelope, reply.usage));
+
+  parts.push("data: [DONE]\n\n");
 
   return new Response(parts.join(""), {
     status: 200,
@@ -544,7 +642,7 @@ export async function handleNonStreaming(
         finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop",
         index: 0,
       }],
-      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      usage: usageBlock(reply.usage),
     }),
     { status: 200, headers: { "Content-Type": "application/json" } },
   );

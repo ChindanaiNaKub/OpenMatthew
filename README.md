@@ -203,14 +203,22 @@ After logging into Matthew, click it and paste.
 
 ### Token usage tracking
 
-OpenCode's panel often shows `0 tokens` for Matthew, because Matthew strips or reformats the `usage` field in its SSE stream and the plugin cannot write data back into OpenCode's UI. So the plugin records usage itself:
+Matthew does report token counts, but not where an OpenAI client looks for them. There is no `usage` field in its payloads — instead the stream carries `ptoken` and `ctoken` events, each a bare integer, which the caller is expected to accumulate.
+
+The server reads them. Non-streaming replies carry a real `usage` block, and streamed ones get a usage chunk before `[DONE]` if you ask for it:
+
+```json
+{"model":"gpt-5.2","messages":[…],"stream_options":{"include_usage":true}}
+```
+
+OpenCode's panel still shows `0 tokens`, because the plugin cannot write into OpenCode's UI. So it records usage itself:
 
 - Prints a line after each response, like `[matthew] Usage: +120 prompt / +45 completion tokens (total: 165)`
 - Accumulates totals in `~/.config/opencode/matthew-usage.json`
 - `npm run usage` prints the running total
 - Fetches your dashboard quota on login and warns past 80% of either limit
 
-This applies to the OpenCode plugin. The standalone server does not track usage.
+Those four bullets are the OpenCode plugin's own bookkeeping, and it still estimates rather than using the numbers Matthew streams.
 
 ### Stretching your quota
 
