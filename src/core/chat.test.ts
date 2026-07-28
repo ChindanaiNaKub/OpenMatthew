@@ -20,7 +20,7 @@ interface FakeMatthew {
 }
 
 async function startFakeMatthew(
-  options: { ticketStatus?: number } = {},
+  options: { ticketStatus?: number; reply?: string[] } = {},
 ): Promise<FakeMatthew> {
   let sentFields: Record<string, string> = {};
   let streamUrl = "";
@@ -71,8 +71,9 @@ async function startFakeMatthew(
           return;
         }
         res.writeHead(200, { "Content-Type": "text/event-stream" });
-        res.write('data: {"message":"Hel"}\n\n');
-        res.write('data: {"message":"lo"}\n\n');
+        for (const chunk of options.reply ?? ["Hel", "lo"]) {
+          res.write(`data: ${JSON.stringify({ message: chunk })}\n\n`);
+        }
         res.write("event: complete\ndata: {}\n\n");
         res.end();
         return;
@@ -253,4 +254,166 @@ test("sends a lone user message verbatim", () => {
 
 test("survives an empty message list", () => {
   assert.equal(serializeConversation([]), "");
+});
+
+// Clients that use tools send `content` as a list of parts. Before this it
+// reached Matthew as "[object Object]".
+test("flattens content given as a list of parts", () => {
+  const sent = serializeConversation([
+    { role: "system", content: [{ type: "text", text: "Be terse." }] },
+    { role: "user", content: [{ type: "text", text: "first" }, { type: "text", text: "second" }] },
+  ]);
+
+  assert.match(sent, /Be terse\./);
+  assert.match(sent, /first\nsecond/);
+  assert.doesNotMatch(sent, /\[object Object\]/);
+});
+
+// The second turn of a tool loop: the model has to see the call it made
+// and the result that came back, or it answers the original question again.
+test("replays a completed tool turn back into the transcript", () => {
+  const sent = serializeConversation([
+    { role: "user", content: "what is in a.ts" },
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [
+        {
+          id: "call_1",
+          type: "function",
+          function: { name: "read_file", arguments: '{"path":"a.ts"}' },
+        },
+      ],
+    },
+    { role: "tool", tool_call_id: "call_1", content: "export const x = 1" },
+  ]);
+
+  assert.match(sent, /<tool_call>/);
+  assert.match(sent, /"name":"read_file"/);
+  // The result is labelled with the tool's name, which only the assistant
+  // turn knows — the tool message carries an id.
+  assert.match(sent, /Tool result \(read_file\): export const x = 1/);
+  assert.match(sent, /Continue, using the tool result above\./);
+});
+
+test("sends the tool schemas to Matthew as prompt text", async () => {
+  const fake = await startFakeMatthew();
+  try {
+    await chat(fake, {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "read a.ts" }],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "read_file",
+            description: "Read a file.",
+            parameters: { type: "object", properties: { path: { type: "string" } } },
+          },
+        },
+      ],
+    }).then((r) => r.text());
+
+    const sent = fake.sentMessage();
+    assert.match(sent, /read_file/);
+    assert.match(sent, /Read a file\./);
+    assert.match(sent, /<tool_call>/);
+    assert.match(sent, /read a\.ts/);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("returns a tool call as OpenAI tool_calls when not streaming", async () => {
+  const fake = await startFakeMatthew({
+    reply: ['<tool_call>{"name":"read_file",', '"arguments":{"path":"a.ts"}}</tool_call>'],
+  });
+  try {
+    const body = (await chat(fake, {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "read a.ts" }],
+      stream: false,
+      tools: [{ type: "function", function: { name: "read_file" } }],
+    }).then((r) => r.json())) as {
+      choices: Array<{
+        finish_reason: string;
+        message: { content: string | null; tool_calls?: Array<{ function: { name: string; arguments: string } }> };
+      }>;
+    };
+
+    const choice = body.choices[0]!;
+    assert.equal(choice.finish_reason, "tool_calls");
+    assert.equal(choice.message.content, null);
+    assert.equal(choice.message.tool_calls?.[0]?.function.name, "read_file");
+    assert.deepEqual(JSON.parse(choice.message.tool_calls![0]!.function.arguments), {
+      path: "a.ts",
+    });
+  } finally {
+    await fake.close();
+  }
+});
+
+test("returns a tool call as tool_calls deltas when streaming", async () => {
+  const fake = await startFakeMatthew({
+    reply: ['<tool_call>{"name":"read_file","arguments":{"path":"a.ts"}}</tool_call>'],
+  });
+  try {
+    const text = await chat(fake, {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "read a.ts" }],
+      tools: [{ type: "function", function: { name: "read_file" } }],
+    }).then((r) => r.text());
+
+    assert.match(text, /"tool_calls"/);
+    assert.match(text, /"name":"read_file"/);
+    assert.match(text, /"finish_reason":"tool_calls"/);
+    assert.match(text, /data: \[DONE\]/);
+    // The raw protocol must not leak out as assistant content as well.
+    assert.doesNotMatch(text, /"content":"<tool_call>/);
+  } finally {
+    await fake.close();
+  }
+});
+
+// Offering tools must not change what an ordinary answer looks like.
+test("answers normally when the reply carries no tool call", async () => {
+  const fake = await startFakeMatthew();
+  try {
+    const body = (await chat(fake, {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "hi" }],
+      stream: false,
+      tools: [{ type: "function", function: { name: "read_file" } }],
+    }).then((r) => r.json())) as {
+      choices: Array<{ finish_reason: string; message: { content: string } }>;
+    };
+
+    assert.equal(body.choices[0]?.finish_reason, "stop");
+    assert.equal(body.choices[0]?.message.content, "Hello");
+  } finally {
+    await fake.close();
+  }
+});
+
+test("neither injects nor parses when tool_choice is none", async () => {
+  const fake = await startFakeMatthew({
+    reply: ['<tool_call>{"name":"read_file","arguments":{}}</tool_call>'],
+  });
+  try {
+    const body = (await chat(fake, {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "hi" }],
+      stream: false,
+      tool_choice: "none",
+      tools: [{ type: "function", function: { name: "read_file" } }],
+    }).then((r) => r.json())) as {
+      choices: Array<{ finish_reason: string; message: { content: string; tool_calls?: unknown } }>;
+    };
+
+    assert.doesNotMatch(fake.sentMessage(), /## Available tools/);
+    assert.equal(body.choices[0]?.finish_reason, "stop");
+    assert.equal(body.choices[0]?.message.tool_calls, undefined);
+  } finally {
+    await fake.close();
+  }
 });

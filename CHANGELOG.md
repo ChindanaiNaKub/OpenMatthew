@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Tool calling**, emulated over an API that has none. Matthew takes a
+  string and returns a string, so the schemas from a request's `tools` are
+  rendered into the prompt, the model is asked to answer in a `<tool_call>`
+  protocol, and that is parsed back into OpenAI `tool_calls` with
+  `finish_reason: "tool_calls"`. Covers `tool_choice`, several calls per
+  reply, and `role: "tool"` results on the following turn. This is what
+  agent platforms drive their loop with — without it Hermes Agent, thclaws
+  and Cursor could chat but never act.
+- **Per-platform setup notes** in the README for Hermes Agent, thclaws and
+  Cursor, including the tunnel Cursor needs because it cannot reach
+  loopback.
+
+### Fixed
+
+- `content` sent as a list of parts (`[{type: "text", ...}]`) reached
+  Matthew as `[object Object]`. Clients switch to that shape once tool
+  messages are in play, so it broke the same platforms tool calling is for.
+- `role: "tool"` messages were labelled "Instructions" in the transcript
+  and assistant `tool_calls` were dropped, so a tool result arrived
+  unattributed and the model could not see the call it answered.
+
 ## 0.2.0
 
 OpenMatthew started as an OpenCode plugin. It now works with any tool that

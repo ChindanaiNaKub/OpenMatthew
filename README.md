@@ -62,6 +62,22 @@ curl http://127.0.0.1:4141/v1/chat/completions \
   -d '{"model":"gpt-5.2","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
+### Pointing a specific platform at it
+
+**Hermes Agent** — `~/.hermes/config.yaml`, or `hermes model` → "Custom endpoint":
+
+```yaml
+model:
+  default: gpt-5.2
+  provider: custom
+  base_url: http://127.0.0.1:4141/v1
+  api_key: <token from npm run creds>
+```
+
+**thclaws** — the generic OpenAI-compatible slot (`oai/*`) in `~/.config/thclaws/settings.json`, or `.thclaws/settings.json` for one project. The key goes in the OS keychain or `.env` rather than the config file.
+
+**Cursor** — `127.0.0.1` will not work. Cursor sends chat through its own backend, which can't reach your loopback, so you need a tunnel (`ngrok http 4141`, `cloudflared`) and the public HTTPS URL in *Override OpenAI Base URL*. Add the model id by hand before pressing Verify. Turning on a custom OpenAI key also disables Cursor's own agent stack — you get the chat pane, not Composer.
+
 ### What the server handles
 
 | | |
@@ -70,6 +86,26 @@ curl http://127.0.0.1:4141/v1/chat/completions \
 | `GET /v1/models` | The model list, no auth needed. Many clients probe this before you've entered a key. |
 | CORS and preflight | So browser-based platform UIs can reach it |
 | System prompts and history | The whole conversation is forwarded, not only your last message |
+| Tool calling | Emulated — see below. Without it, agent platforms can chat but can't act |
+
+### Tool calling is emulated, not native
+
+Agent platforms drive their loop with tool calls: read a file, run a command, edit something. Matthew's API has no tool support at all — it takes a string and returns a string — so the server fakes it.
+
+Send a normal OpenAI request with `tools` and you get a normal OpenAI response with `tool_calls`. In between, the schemas are written into the prompt as text, the model is asked to reply in a specific format, and that format is parsed back out:
+
+```
+<tool_call>
+{"name": "read_file", "arguments": {"path": "src/index.ts"}}
+</tool_call>
+```
+
+`tool_choice` (`none` / `auto` / `required` / a named function), several calls in one reply, and `role: "tool"` results on the next turn all work. The parser also accepts a fenced ` ```json ` block or a bare JSON object, because a prompted model follows a format roughly rather than exactly.
+
+Two consequences worth knowing before you point an agent at this:
+
+- **It is less reliable than a real tool-calling API.** Sometimes the model describes the call instead of emitting it, and that turn is lost. Agents that retry a malformed step cope fine; agents that hard-fail may not. A tool name that wasn't offered is treated as prose rather than called.
+- **Replies don't stream while tools are in play.** A tool call can't be recognised until its closing tag arrives, so a request carrying `tools` waits for the whole reply before sending anything. Requests without `tools` stream token by token as before.
 
 ### The model you ask for is ignored
 
