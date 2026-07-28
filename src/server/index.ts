@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse, Server } from "node:http";
 import { MATTHEW_API_BASE } from "../constants.js";
 import { handleMatthewChat } from "../core/chat.js";
 import type { OpenAIChatRequest } from "../core/chat.js";
-import { toOpenAIModelList } from "../core/models.js";
+import { fetchAvailableModels, toOpenAIModelList } from "../core/models.js";
 
 /**
  * Standalone OpenAI-compatible server over the Matthew core.
@@ -130,11 +130,19 @@ export function createMatthewServer(options: ServerOptions = {}): Server {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
 
       // Many OpenAI clients enumerate models before letting you pick one,
-      // and show an empty or broken picker if this 404s. It needs no auth:
-      // the list is static, and requiring a token here just breaks clients
-      // that probe the endpoint before they are configured.
+      // and show an empty or broken picker if this 404s. Credentials are
+      // optional here on purpose: clients probe this before they are
+      // configured, and answering with the static list beats a 401 they
+      // will render as a broken picker.
+      //
+      // With a token we can do better than the static list, which mirrors
+      // the frontend bundle and has gone stale before.
       if (req.method === "GET" && (url.pathname === "/v1/models" || url.pathname === "/models")) {
-        sendJson(res, 200, toOpenAIModelList());
+        const credentials = parseCredentials(req.headers.authorization);
+        const live = credentials
+          ? await fetchAvailableModels(credentials.accessToken, apiBase)
+          : null;
+        sendJson(res, 200, live ? toOpenAIModelList(live) : toOpenAIModelList());
         return;
       }
 
