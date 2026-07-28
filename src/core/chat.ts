@@ -14,6 +14,8 @@ import {
   toolNames,
 } from "./tools.js";
 import type { OpenAITool, OpenAIToolCall, ToolChoice } from "./tools.js";
+import { createSseReader } from "./sse.js";
+import type { MatthewToolCall } from "./sse.js";
 
 /**
  * OpenAI allows `content` to be a string, a list of typed parts, or null
@@ -240,12 +242,20 @@ export async function handleMatthewChat(
   }
 
   if (body.stream === false) {
-    return handleNonStreaming(threadId, accessToken, apiBase, body.model, allowedTools);
+    return handleNonStreaming(
+      threadId,
+      accessToken,
+      sessionToken,
+      apiBase,
+      body.model,
+      allowedTools,
+    );
   }
 
   return handleStreaming(
     threadId,
     accessToken,
+    sessionToken,
     apiBase,
     body.model,
     allowedTools,
@@ -309,9 +319,53 @@ async function buildStreamUrl(
   };
 }
 
+/**
+ * Answer one of Matthew's own tool calls with a refusal.
+ *
+ * Matthew's frontend implements `run_data_analysis` and
+ * `generate_document` in the browser and posts the result back. We are not
+ * a browser and cannot run either, but staying silent is worse than saying
+ * so: the stream does not continue until the call is answered.
+ */
+async function declineToolCall(
+  apiBase: string,
+  accessToken: string,
+  sessionToken: string,
+  threadId: string,
+  call: MatthewToolCall,
+): Promise<void> {
+  const content = JSON.stringify({
+    status: "failed",
+    error:
+      `The connected client cannot run \`${call.name}\`. OpenMatthew is an ` +
+      `OpenAI-compatible proxy and does not implement Matthew's ` +
+      `browser-side tools. Answer without it.`,
+  });
+
+  try {
+    await fetch(`${apiBase}/api/submit_tool_result`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        token: sessionToken,
+        thread_id: threadId,
+        tool_call_id: call.toolCallId,
+        content,
+      }),
+    });
+  } catch {
+    // Best effort. If this fails the stream stalls, which is exactly what
+    // happened before it existed — there is nothing better to fall back to.
+  }
+}
+
 export async function handleStreaming(
   threadId: string,
   accessToken: string,
+  sessionToken: string,
   apiBase: string,
   model: string,
   allowedTools?: string[] | null,
@@ -322,7 +376,15 @@ export async function handleStreaming(
   // Streaming content out and retracting it once a call turns up is not
   // expressible in OpenAI's wire format.
   if (allowedTools) {
-    return streamBuffered(threadId, accessToken, apiBase, model, allowedTools, includeUsage);
+    return streamBuffered(
+      threadId,
+      accessToken,
+      sessionToken,
+      apiBase,
+      model,
+      allowedTools,
+      includeUsage,
+    );
   }
 
   const built = await buildStreamUrl(threadId, accessToken, apiBase);
@@ -344,115 +406,83 @@ export async function handleStreaming(
 
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = "";
   const encoder = new TextEncoder();
-  const completionId = newCompletionId();
-  const created = nowSeconds();
-
   const envelope = {
-    id: completionId,
+    id: newCompletionId(),
     object: "chat.completion.chunk",
-    created,
+    created: nowSeconds(),
     model,
   };
-
   const chunk = (choices: unknown[]): string => formatOpenAISSE({ ...envelope, choices });
-
   const usage = newUsage();
 
-  // Hoisted out of `pull` deliberately. An SSE frame can be split across
-  // reads — `event: ctoken` arriving in one chunk and its `data:` line in
-  // the next — and a per-read variable loses the event name in between,
-  // silently misfiling the payload.
-  let currentEvent = "";
+  let controller: ReadableStreamDefaultController | null = null;
+  let closed = false;
+  const pendingToolCalls: MatthewToolCall[] = [];
 
-  function enqueueFinish(controller: ReadableStreamDefaultController) {
-    controller.enqueue(encoder.encode(chunk([
-      { delta: {}, finish_reason: "stop", index: 0 },
-    ])));
-    if (includeUsage) controller.enqueue(encoder.encode(usageChunk(envelope, usage)));
-    controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-    controller.close();
+  const emit = (payload: string): void => {
+    if (!closed) controller?.enqueue(encoder.encode(payload));
+  };
+
+  function finish(): void {
+    if (closed) return;
+    emit(chunk([{ delta: {}, finish_reason: "stop", index: 0 }]));
+    if (includeUsage) emit(usageChunk(envelope, usage));
+    emit("data: [DONE]\n\n");
+    closed = true;
+    controller?.close();
   }
 
+  const sse = createSseReader({
+    onText(text) {
+      emit(chunk([{ delta: { content: text, role: "assistant" }, finish_reason: null, index: 0 }]));
+    },
+    onPromptTokens(count) {
+      usage.prompt += count;
+    },
+    onCompletionTokens(count) {
+      usage.completion += count;
+    },
+    onToolCall(call) {
+      pendingToolCalls.push(call);
+    },
+    onError(raw) {
+      emit(chunk([{ delta: { content: `\n[Error: ${raw}]` }, finish_reason: "stop", index: 0 }]));
+      emit("data: [DONE]\n\n");
+      closed = true;
+      controller?.close();
+    },
+    onComplete() {
+      finish();
+    },
+  });
+
   const stream = new ReadableStream({
-    async pull(controller) {
+    async pull(activeController) {
+      controller = activeController;
+
       try {
         const { done, value } = await reader.read();
 
         if (done) {
-          enqueueFinish(controller);
+          sse.flush();
+          finish();
           return;
         }
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
+        sse.push(decoder.decode(value, { stream: true }));
 
-        for (const line of lines) {
-          if (line.startsWith("event:")) {
-            currentEvent = line.slice(6).trim();
-            continue;
-          }
-
-          if (currentEvent === "complete") {
-            enqueueFinish(controller);
-            return;
-          }
-
-          if (currentEvent === "error") {
-            const jsonStr = line.startsWith("data:") ? line.slice(5).trim() : "";
-            const errMsg = jsonStr ? jsonStr : "Stream error";
-            controller.enqueue(encoder.encode(chunk([
-              { delta: { content: `\n[Error: ${errMsg}]` }, finish_reason: "stop", index: 0 },
-            ])));
-            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-            controller.close();
-            return;
-          }
-
-          if (!line.startsWith("data:")) {
-            currentEvent = "";
-            continue;
-          }
-
-          const jsonStr = line.slice(5).trim();
-          if (!jsonStr) continue;
-
-          // Matthew reports token counts as bare integers on their own
-          // events. These were being dropped, which is why every reply
-          // used to claim zero tokens.
-          if (currentEvent === "ptoken" || currentEvent === "ctoken") {
-            addTokenCount(usage, currentEvent, jsonStr);
-            currentEvent = "";
-            continue;
-          }
-
-          if (currentEvent === "" || currentEvent === "message") {
-            try {
-              const data = JSON.parse(jsonStr) as { message?: string };
-              if (data.message) {
-                controller.enqueue(encoder.encode(chunk([
-                  {
-                    delta: { content: data.message, role: "assistant" },
-                    finish_reason: null,
-                    index: 0,
-                  },
-                ])));
-              }
-            } catch {
-              // skip non-JSON
-            }
-          }
-
-          currentEvent = "";
+        // Not awaited: what we owe Matthew is a refusal, and blocking the
+        // reader on it would introduce the very stall this removes.
+        for (const call of pendingToolCalls.splice(0)) {
+          void declineToolCall(apiBase, accessToken, sessionToken, threadId, call);
         }
       } catch (err) {
-        controller.error(err);
+        activeController.error(err);
       }
     },
     cancel() {
-      reader.cancel();
+      void reader.cancel();
     },
   });
 
@@ -467,49 +497,37 @@ export async function handleStreaming(
 }
 
 /**
- * Walk a whole Matthew SSE body, collecting the reply text and the token
- * counts. Event-aware, because `ptoken`/`ctoken` carry a bare integer
- * rather than the JSON envelope `message` events use — reading data lines
- * without tracking which event they belong to cannot tell them apart.
+ * Walk a whole Matthew SSE body in one go. A convenience over the shared
+ * reader for callers that already hold the complete text.
  */
-export function collectSseBody(sseBody: string): { text: string; usage: StreamUsage } {
+export function collectSseBody(sseBody: string): {
+  text: string;
+  usage: StreamUsage;
+  toolCalls: MatthewToolCall[];
+} {
   let text = "";
   const usage = newUsage();
-  let currentEvent = "";
+  const toolCalls: MatthewToolCall[] = [];
 
-  for (const rawLine of sseBody.split("\n")) {
-    const line = rawLine.trimEnd();
+  const sse = createSseReader({
+    onText: (chunk) => {
+      text += chunk;
+    },
+    onPromptTokens: (count) => {
+      usage.prompt += count;
+    },
+    onCompletionTokens: (count) => {
+      usage.completion += count;
+    },
+    onToolCall: (call) => {
+      toolCalls.push(call);
+    },
+  });
 
-    if (line.startsWith("event:")) {
-      currentEvent = line.slice(6).trim();
-      continue;
-    }
+  sse.push(sseBody);
+  sse.flush();
 
-    if (!line.startsWith("data:")) {
-      // A blank line terminates the frame; anything else is a field we
-      // don't use (`id:`, `retry:`) and must not reset the event.
-      if (line === "") currentEvent = "";
-      continue;
-    }
-
-    const data = line.slice(5).trim();
-
-    if (currentEvent === "ptoken" || currentEvent === "ctoken") {
-      addTokenCount(usage, currentEvent, data);
-      continue;
-    }
-
-    if (currentEvent === "" || currentEvent === "message") {
-      try {
-        const parsed = JSON.parse(data) as { message?: string };
-        if (parsed.message) text += parsed.message;
-      } catch {
-        // skip non-JSON
-      }
-    }
-  }
-
-  return { text, usage };
+  return { text, usage, toolCalls };
 }
 
 /**
@@ -520,6 +538,7 @@ export function collectSseBody(sseBody: string): { text: string; usage: StreamUs
 async function readWholeReply(
   threadId: string,
   accessToken: string,
+  sessionToken: string,
   apiBase: string,
 ): Promise<{ text: string; usage: StreamUsage } | { error: Response }> {
   const built = await buildStreamUrl(threadId, accessToken, apiBase);
@@ -541,19 +560,67 @@ async function readWholeReply(
     };
   }
 
-  return collectSseBody(await upstream.text());
+  // Read incrementally rather than awaiting the whole body. If Matthew
+  // asks for a tool result partway through, the body never completes until
+  // it is answered — `upstream.text()` would wait forever.
+  if (!upstream.body) {
+    const { text, usage } = collectSseBody(await upstream.text());
+    return { text, usage };
+  }
+
+  let text = "";
+  const usage = newUsage();
+  const pendingToolCalls: MatthewToolCall[] = [];
+
+  const sse = createSseReader({
+    onText: (chunk) => {
+      text += chunk;
+    },
+    onPromptTokens: (count) => {
+      usage.prompt += count;
+    },
+    onCompletionTokens: (count) => {
+      usage.completion += count;
+    },
+    onToolCall: (call) => {
+      pendingToolCalls.push(call);
+    },
+  });
+
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    sse.push(decoder.decode(value, { stream: true }));
+
+    // Awaited, unlike the streaming path: this one buffers the whole reply
+    // anyway, and nothing more arrives until the call is answered.
+    for (const call of pendingToolCalls.splice(0)) {
+      await declineToolCall(apiBase, accessToken, sessionToken, threadId, call);
+    }
+
+    if (sse.finished) break;
+  }
+
+  sse.flush();
+
+  return { text, usage };
 }
 
 /** Emit an already-complete reply as a short OpenAI SSE stream. */
 async function streamBuffered(
   threadId: string,
   accessToken: string,
+  sessionToken: string,
   apiBase: string,
   model: string,
   allowedTools: string[],
   includeUsage: boolean,
 ): Promise<Response> {
-  const reply = await readWholeReply(threadId, accessToken, apiBase);
+  const reply = await readWholeReply(threadId, accessToken, sessionToken, apiBase);
   if ("error" in reply) return reply.error;
 
   const { content, toolCalls } = parseToolCalls(reply.text, allowedTools);
@@ -617,11 +684,12 @@ async function streamBuffered(
 export async function handleNonStreaming(
   threadId: string,
   accessToken: string,
+  sessionToken: string,
   apiBase: string,
   model: string,
   allowedTools?: string[] | null,
 ): Promise<Response> {
-  const reply = await readWholeReply(threadId, accessToken, apiBase);
+  const reply = await readWholeReply(threadId, accessToken, sessionToken, apiBase);
   if ("error" in reply) return reply.error;
 
   const { content, toolCalls } = allowedTools

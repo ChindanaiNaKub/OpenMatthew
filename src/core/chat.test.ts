@@ -16,6 +16,7 @@ interface FakeMatthew {
   sentMessage(): string;
   sentFields(): Record<string, string>;
   streamUrl(): string;
+  submittedToolResult(): Record<string, unknown> | null;
   close(): Promise<void>;
 }
 
@@ -25,10 +26,21 @@ async function startFakeMatthew(
     reply?: string[];
     /** Emitted as Matthew's own `ptoken`/`ctoken` events. */
     usage?: { prompt: number; completion: number };
+    /**
+     * Emit one of Matthew's own tool calls and — like the real thing —
+     * send nothing further until a result is submitted. A client that
+     * ignores the call hangs here, which is the bug under test.
+     */
+    toolCall?: { name: string; tool_call_id: string; arguments?: unknown };
   } = {},
 ): Promise<FakeMatthew> {
   let sentFields: Record<string, string> = {};
   let streamUrl = "";
+  let submittedToolResult: Record<string, unknown> | null = null;
+  let onToolResult: (() => void) | null = null;
+  const toolResultArrived = new Promise<void>((resolve) => {
+    onToolResult = resolve;
+  });
 
   const server = createServer((req, res) => {
     void (async () => {
@@ -55,6 +67,18 @@ async function startFakeMatthew(
         return;
       }
 
+      if (url.startsWith("/api/submit_tool_result")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(chunk as Buffer);
+        submittedToolResult = JSON.parse(
+          Buffer.concat(chunks).toString("utf-8"),
+        ) as Record<string, unknown>;
+        onToolResult?.();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+
       if (url.startsWith("/api/thread_sse_ticket")) {
         if (options.ticketStatus && options.ticketStatus !== 200) {
           res.writeHead(options.ticketStatus, { "Content-Type": "application/json" });
@@ -76,6 +100,12 @@ async function startFakeMatthew(
           return;
         }
         res.writeHead(200, { "Content-Type": "text/event-stream" });
+
+        if (options.toolCall) {
+          res.write(`event: tool_call\ndata: ${JSON.stringify(options.toolCall)}\n\n`);
+          await toolResultArrived;
+        }
+
         for (const chunk of options.reply ?? ["Hel", "lo"]) {
           res.write(`data: ${JSON.stringify({ message: chunk })}\n\n`);
         }
@@ -104,6 +134,7 @@ async function startFakeMatthew(
     sentMessage: () => sentFields.message ?? "",
     sentFields: () => sentFields,
     streamUrl: () => streamUrl,
+    submittedToolResult: () => submittedToolResult,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }
@@ -531,4 +562,66 @@ test("keeps the event name across a split frame", () => {
 test("ignores a token count that is not a number", () => {
   const { usage } = collectSseBody("event: ptoken\ndata: not-a-number\n\n");
   assert.deepEqual(usage, { prompt: 0, completion: 0 });
+});
+
+// Matthew's own tools (run_data_analysis, generate_document) arrive as a
+// `tool_call` event and it sends nothing further until the result is
+// posted back. We cannot run them, but silence hangs the stream — the fake
+// withholds the rest of the reply, so this test times out if we regress.
+test("answers Matthew's own tool calls instead of hanging", async () => {
+  const fake = await startFakeMatthew({
+    toolCall: {
+      name: "run_data_analysis",
+      tool_call_id: "tc-1",
+      arguments: { file_id: "f-1", code: "print(1)" },
+    },
+  });
+  try {
+    const text = await chat(fake, {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "analyse this" }],
+    }).then((r) => r.text());
+
+    const submitted = fake.submittedToolResult();
+    assert.equal(submitted?.tool_call_id, "tc-1");
+    assert.equal(submitted?.thread_id, "thread-1");
+    assert.equal(submitted?.token, "session-token");
+    assert.match(String(submitted?.content), /cannot run/);
+    assert.match(String(submitted?.content), /run_data_analysis/);
+
+    // And the reply that followed still reached the client.
+    assert.match(text, /"content":"Hel"/);
+    assert.match(text, /data: \[DONE\]/);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("answers a tool call on the non-streaming path too", async () => {
+  const fake = await startFakeMatthew({
+    toolCall: { name: "generate_document", tool_call_id: "tc-2" },
+  });
+  try {
+    const body = (await chat(fake, {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "write a doc" }],
+      stream: false,
+    }).then((r) => r.json())) as { choices: Array<{ message: { content: string } }> };
+
+    assert.equal(fake.submittedToolResult()?.tool_call_id, "tc-2");
+    assert.equal(body.choices[0]?.message.content, "Hello");
+  } finally {
+    await fake.close();
+  }
+});
+
+test("does not treat a tool call as reply text", () => {
+  const { text, toolCalls } = collectSseBody(
+    'event: tool_call\ndata: {"name":"generate_document","tool_call_id":"x"}\n\n' +
+      'data: {"message":"done"}\n\n',
+  );
+
+  assert.equal(text, "done");
+  assert.equal(toolCalls.length, 1);
+  assert.equal(toolCalls[0]?.name, "generate_document");
 });
