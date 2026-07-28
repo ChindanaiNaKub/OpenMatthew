@@ -109,9 +109,19 @@ Two consequences worth knowing before you point an agent at this:
 - **It is less reliable than a real tool-calling API.** Sometimes the model describes the call instead of emitting it, and that turn is lost. Agents that retry a malformed step cope fine; agents that hard-fail may not. A tool name that wasn't offered is treated as prose rather than called.
 - **Replies don't stream while tools are in play.** A tool call can't be recognised until its closing tag arrives, so a request carrying `tools` waits for the whole reply before sending anything. Requests without `tools` stream token by token as before.
 
-### The model you ask for is ignored
+### The model you ask for is ignored, unless you opt in
 
-Matthew picks the model from your **assistant**, and its chat API carries no model field at all. Whatever your default assistant is set to on [matthew.cmu.ac.th](https://matthew.cmu.ac.th) answers every request, regardless of what you put in `model`. Change it in Matthew's own settings.
+Matthew's chat API carries no model field. It picks the model from your **assistant**, so by default whatever your default assistant is set to on [matthew.cmu.ac.th](https://matthew.cmu.ac.th) answers every request, whatever you put in `model`.
+
+You can make `model` work:
+
+```bash
+MATTHEW_ALLOW_MODEL_SWITCH=1 npm run serve
+```
+
+The catch, and the reason it is off by default: the only way to change the model is to change your **default assistant**, which is account state, not request state. Your browser session on matthew.cmu.ac.th follows whatever your agent last asked for. If that trade is fine, turn it on; if you would rather your Matthew settings stay where you put them, leave it off.
+
+Either way, `GET /v1/models` returns Matthew's live list when your client sends a token, and falls back to a built-in list when it doesn't.
 
 Every request opens a fresh Matthew thread, so conversation history lives in what your client sends rather than on Matthew's side.
 
@@ -289,6 +299,7 @@ All optional.
 | `OPENCODE_CONFIG_DIR` | Where the plugin stores accounts and usage (default `~/.config/opencode`) |
 | `MATTHEW_CONTEXT_LIMIT` | Context token budget (default 9M) |
 | `MATTHEW_RESPONSE_LIMIT` | Response token budget (default 3M) |
+| `MATTHEW_ALLOW_MODEL_SWITCH` | `1` to let the `model` parameter change your default assistant |
 | `MATTHEW_OVERRIDE_SYSTEM` | `0` to disable system-prompt injection |
 | `MATTHEW_SYSTEM_PROMPT` | Custom system prompt override |
 

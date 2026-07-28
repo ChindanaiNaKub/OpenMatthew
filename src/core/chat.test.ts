@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import { collectSseBody, handleMatthewChat, serializeConversation } from "./chat.js";
+import { resetSelectedModels } from "./models.js";
 
 /**
  * A stand-in for Matthew that enforces the parts of its protocol we
@@ -17,6 +18,7 @@ interface FakeMatthew {
   sentFields(): Record<string, string>;
   streamUrl(): string;
   submittedToolResult(): Record<string, unknown> | null;
+  modelPatches(): string[];
   close(): Promise<void>;
 }
 
@@ -37,6 +39,7 @@ async function startFakeMatthew(
   let sentFields: Record<string, string> = {};
   let streamUrl = "";
   let submittedToolResult: Record<string, unknown> | null = null;
+  const modelPatches: string[] = [];
   let onToolResult: (() => void) | null = null;
   const toolResultArrived = new Promise<void>((resolve) => {
     onToolResult = resolve;
@@ -64,6 +67,18 @@ async function startFakeMatthew(
         }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ new_thread: { thread_actual_id: "thread-1" } }));
+        return;
+      }
+
+      if (url.startsWith("/api/update_default_llm")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(chunk as Buffer);
+        const parsed = JSON.parse(Buffer.concat(chunks).toString("utf-8")) as {
+          model?: string;
+        };
+        modelPatches.push(parsed.model ?? "");
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
         return;
       }
 
@@ -135,6 +150,7 @@ async function startFakeMatthew(
     sentFields: () => sentFields,
     streamUrl: () => streamUrl,
     submittedToolResult: () => submittedToolResult,
+    modelPatches: () => modelPatches,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }
@@ -624,4 +640,49 @@ test("does not treat a tool call as reply text", () => {
   assert.equal(text, "done");
   assert.equal(toolCalls.length, 1);
   assert.equal(toolCalls[0]?.name, "generate_document");
+});
+
+// Honouring `model` means PATCHing the user's default assistant, which
+// their browser session sees too. That is a surprising thing for a proxy
+// to do uninvited, so it stays off until asked for.
+test("leaves the model alone unless switching was enabled", async () => {
+  resetSelectedModels();
+  const original = process.env.MATTHEW_ALLOW_MODEL_SWITCH;
+  delete process.env.MATTHEW_ALLOW_MODEL_SWITCH;
+
+  const fake = await startFakeMatthew();
+  try {
+    await chat(fake, {
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: "hi" }],
+      stream: false,
+    }).then((r) => r.json());
+
+    assert.deepEqual(fake.modelPatches(), []);
+  } finally {
+    await fake.close();
+    if (original === undefined) delete process.env.MATTHEW_ALLOW_MODEL_SWITCH;
+    else process.env.MATTHEW_ALLOW_MODEL_SWITCH = original;
+  }
+});
+
+test("switches the model when the operator opted in", async () => {
+  resetSelectedModels();
+  const original = process.env.MATTHEW_ALLOW_MODEL_SWITCH;
+  process.env.MATTHEW_ALLOW_MODEL_SWITCH = "1";
+
+  const fake = await startFakeMatthew();
+  try {
+    await chat(fake, {
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: "hi" }],
+      stream: false,
+    }).then((r) => r.json());
+
+    assert.deepEqual(fake.modelPatches(), ["gpt-4o-mini"]);
+  } finally {
+    await fake.close();
+    if (original === undefined) delete process.env.MATTHEW_ALLOW_MODEL_SWITCH;
+    else process.env.MATTHEW_ALLOW_MODEL_SWITCH = original;
+  }
 });

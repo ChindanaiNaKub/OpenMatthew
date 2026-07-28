@@ -14,6 +14,7 @@ import {
   toolNames,
 } from "./tools.js";
 import type { OpenAITool, OpenAIToolCall, ToolChoice } from "./tools.js";
+import { modelSwitchEnabled, selectModel } from "./models.js";
 import { createSseReader } from "./sse.js";
 import type { MatthewToolCall } from "./sse.js";
 
@@ -85,13 +86,6 @@ export interface StreamUsage {
 
 function newUsage(): StreamUsage {
   return { prompt: 0, completion: 0 };
-}
-
-function addTokenCount(usage: StreamUsage, event: string, data: string): void {
-  const count = Number.parseInt(data, 10);
-  if (!Number.isFinite(count) || count < 0) return;
-  if (event === "ptoken") usage.prompt += count;
-  else usage.completion += count;
 }
 
 function usageBlock(usage: StreamUsage): Record<string, number> {
@@ -183,6 +177,13 @@ export async function handleMatthewChat(
   apiBase: string,
   clientName = "OpenMatthew",
 ): Promise<Response> {
+  // Off unless the operator opted in, because switching the model mutates
+  // the account rather than the request. Failure is deliberately not fatal:
+  // the reply still arrives, from whichever model the assistant was on.
+  if (body.model && modelSwitchEnabled()) {
+    await selectModel(body.model, accessToken, sessionToken, assistantId, apiBase);
+  }
+
   // Matthew has no tool slot, so the schemas ride in front of the
   // conversation as prompt text. A null block means tools were not offered
   // (or were declined with `tool_choice: "none"`), which is also what stops
