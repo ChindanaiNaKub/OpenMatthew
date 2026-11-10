@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse, Server } from "node:http";
 import { MATTHEW_API_BASE } from "../constants.js";
 import { handleMatthewChat } from "../core/chat.js";
 import type { OpenAIChatRequest } from "../core/chat.js";
+import { handleMatthewImages } from "../core/images.js";
+import type { OpenAIImageRequest } from "../core/images.js";
 import { toOpenAIModelList } from "../core/models.js";
 
 /**
@@ -141,7 +143,10 @@ export function createMatthewServer(options: ServerOptions = {}): Server {
       const isChatCompletions =
         url.pathname === "/v1/chat/completions" || url.pathname === "/chat/completions";
 
-      if (req.method !== "POST" || !isChatCompletions) {
+      const isImageGenerations =
+        url.pathname === "/v1/images/generations" || url.pathname === "/images/generations";
+
+      if (req.method !== "POST" || !(isChatCompletions || isImageGenerations)) {
         sendJson(res, 404, { error: { message: "Not found" } });
         return;
       }
@@ -152,22 +157,30 @@ export function createMatthewServer(options: ServerOptions = {}): Server {
         return;
       }
 
-      let body: OpenAIChatRequest;
+      let body: OpenAIChatRequest & OpenAIImageRequest;
       try {
-        body = JSON.parse(await readBody(req)) as OpenAIChatRequest;
+        body = JSON.parse(await readBody(req)) as OpenAIChatRequest & OpenAIImageRequest;
       } catch {
         sendJson(res, 400, { error: { message: "Invalid JSON body" } });
         return;
       }
 
       try {
-        const webResponse = await handleMatthewChat(
-          body,
-          credentials.accessToken,
-          credentials.sessionToken,
-          credentials.assistantId || "default",
-          apiBase,
-        );
+        const webResponse = isImageGenerations
+          ? await handleMatthewImages(
+              body,
+              credentials.accessToken,
+              credentials.sessionToken,
+              credentials.assistantId || "default",
+              apiBase,
+            )
+          : await handleMatthewChat(
+              body,
+              credentials.accessToken,
+              credentials.sessionToken,
+              credentials.assistantId || "default",
+              apiBase,
+            );
         await pipeWebResponse(webResponse, res);
       } catch (err) {
         sendJson(res, 500, {

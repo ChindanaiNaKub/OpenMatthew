@@ -16,8 +16,18 @@
   Cursor, including the tunnel Cursor needs because it cannot reach
   loopback.
 
+- Models `gpt-6.1-sol`, `gpt-6-sol`, and `gpt-6-luna`, which Matthew added
+  in October 2026.
+- **`POST /v1/images/generations`** on the standalone server. It returns an
+  OpenAI image response with a URL, or base64 with `response_format:
+  "b64_json"`. Matthew generates the image in a chat thread, so the assistant
+  needs image generation turned on.
+
 ### Fixed
 
+- Streaming chat never finished when Matthew sent usage events after the
+  reply. The stream stalled, so clients waited forever. The `pull` handler
+  now keeps reading until it has output, and event names carry across chunks.
 - `content` sent as a list of parts (`[{type: "text", ...}]`) reached
   Matthew as `[object Object]`. Clients switch to that shape once tool
   messages are in play, so it broke the same platforms tool calling is for.

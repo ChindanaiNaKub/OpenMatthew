@@ -67,7 +67,7 @@ async function main(): Promise<void> {
     `curl http://127.0.0.1:4141/v1/chat/completions \\\n` +
       `  -H "Authorization: Bearer ${encoded}" \\\n` +
       `  -H "Content-Type: application/json" \\\n` +
-      `  -d '{"model":"matthew/gpt-5.2","messages":[{"role":"user","content":"Hello"}]}'`,
+      `  -d '{"model":"matthew/gpt-6.1-sol","messages":[{"role":"user","content":"Hello"}]}'`,
   );
 }
 

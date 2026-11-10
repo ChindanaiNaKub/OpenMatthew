@@ -20,7 +20,7 @@ interface FakeMatthew {
 }
 
 async function startFakeMatthew(
-  options: { ticketStatus?: number; reply?: string[] } = {},
+  options: { ticketStatus?: number; reply?: string[]; usage?: boolean } = {},
 ): Promise<FakeMatthew> {
   let sentFields: Record<string, string> = {};
   let streamUrl = "";
@@ -74,6 +74,13 @@ async function startFakeMatthew(
         for (const chunk of options.reply ?? ["Hel", "lo"]) {
           res.write(`data: ${JSON.stringify({ message: chunk })}\n\n`);
         }
+        if (options.usage) {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          res.write("event: ptoken\ndata: 12.0\n\n");
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          res.write("event: ctoken\ndata: 5.0\n\n");
+          await new Promise((resolve) => setTimeout(resolve, 30));
+        }
         res.write("event: complete\ndata: {}\n\n");
         res.end();
         return;
@@ -117,6 +124,31 @@ test("streams a reply back in OpenAI SSE shape", async () => {
     assert.match(text, /"finish_reason":"stop"/);
     assert.match(text, /data: \[DONE\]/);
   } finally {
+    await fake.close();
+  }
+});
+
+// Usage events arrive in their own network chunks, after the text. A stream
+// that only pulls again on message text never reaches the close.
+test("ends the stream when usage events arrive after the reply", async () => {
+  const fake = await startFakeMatthew({ usage: true });
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const response = await chat(fake, {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    const text = await Promise.race([
+      response.text(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("stream never ended")), 5000);
+      }),
+    ]);
+
+    assert.match(text, /"content":"lo"/);
+    assert.match(text, /data: \[DONE\]/);
+  } finally {
+    clearTimeout(timer);
     await fake.close();
   }
 });

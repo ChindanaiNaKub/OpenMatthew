@@ -18,6 +18,9 @@ export interface MatthewModel {
 }
 
 export const MATTHEW_MODELS: readonly MatthewModel[] = [
+  { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", reasoning: true },
+  { id: "gpt-6-sol", name: "GPT-6 Sol", reasoning: true },
+  { id: "gpt-6-luna", name: "GPT-6 Luna", reasoning: false },
   { id: "gpt-5.5", name: "GPT-5.5", reasoning: true },
   { id: "gpt-5.4", name: "GPT-5.4", reasoning: true },
   { id: "gpt-5.4-mini", name: "GPT-5.4 Mini", reasoning: true },

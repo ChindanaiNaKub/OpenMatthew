@@ -30,7 +30,7 @@ test("GET /v1/models returns the OpenAI list shape", async () => {
     assert.equal(body.data[0]?.object, "model");
 
     const ids = body.data.map((m) => m.id);
-    for (const expected of ["gpt-5.5", "gpt-5.4", "gpt-5.2", "gpt-4o"]) {
+    for (const expected of ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.5", "gpt-4o"]) {
       assert.ok(ids.includes(expected), `missing model ${expected}`);
     }
   });

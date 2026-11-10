@@ -34,11 +34,11 @@ const EXPECTATIONS = [
     label: "thread_sse_response_stream endpoint (reading the reply)",
   },
   {
-    pattern: /ticket=\$\{encodeURIComponent/,
+    pattern: /thread_id:\w+,ticket:\w+/,
     label: "stream URL still authenticates by ticket, not by token",
   },
   {
-    pattern: /i\.append\("aid"/,
+    pattern: /\.append\("aid"/,
     label: "message still carries the assistant id (aid) field",
   },
 ];

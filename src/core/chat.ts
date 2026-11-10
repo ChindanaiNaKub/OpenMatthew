@@ -151,9 +151,32 @@ export async function handleMatthewChat(
     : conversation;
   const allowedTools = toolBlock ? toolNames(body.tools) : null;
 
+  const opened = await openThread(messageBody, accessToken, sessionToken, assistantId, apiBase, clientName);
+  if ("error" in opened) return opened.error;
+  const threadId = opened.threadId;
+
+  if (body.stream === false) {
+    return handleNonStreaming(threadId, accessToken, apiBase, body.model, allowedTools);
+  }
+
+  return handleStreaming(threadId, accessToken, apiBase, body.model, allowedTools);
+}
+
+/**
+ * Post one message as a fresh thread and return its id. Shared by chat and
+ * image generation, since both start a thread the same way.
+ */
+export async function openThread(
+  message: string,
+  accessToken: string,
+  sessionToken: string,
+  assistantId: string,
+  apiBase: string,
+  clientName: string,
+): Promise<{ threadId: string } | { error: Response }> {
   const formData = new FormData();
   formData.append("token", sessionToken);
-  formData.append("message", messageBody);
+  formData.append("message", message);
   formData.append("thread_id", "newchat");
   formData.append("tid", "newchat");
   formData.append("aid", assistantId);
@@ -168,10 +191,12 @@ export async function handleMatthewChat(
 
   if (!msgResponse.ok) {
     const errorText = await msgResponse.text();
-    return new Response(
-      JSON.stringify({ error: { message: errorText } }),
-      { status: msgResponse.status, headers: { "Content-Type": "application/json" } },
-    );
+    return {
+      error: new Response(
+        JSON.stringify({ error: { message: errorText } }),
+        { status: msgResponse.status, headers: { "Content-Type": "application/json" } },
+      ),
+    };
   }
 
   const msgText = await msgResponse.text();
@@ -179,10 +204,12 @@ export async function handleMatthewChat(
   try {
     msgData = JSON.parse(msgText);
   } catch {
-    return new Response(
-      JSON.stringify({ error: { message: `Matthew returned non-JSON: ${msgText.substring(0, 200)}` } }),
-      { status: 502, headers: { "Content-Type": "application/json" } },
-    );
+    return {
+      error: new Response(
+        JSON.stringify({ error: { message: `Matthew returned non-JSON: ${msgText.substring(0, 200)}` } }),
+        { status: 502, headers: { "Content-Type": "application/json" } },
+      ),
+    };
   }
 
   const newThread = msgData.new_thread as Record<string, unknown> | undefined;
@@ -192,17 +219,15 @@ export async function handleMatthewChat(
     (msgData.thread_id as string);
 
   if (!threadId) {
-    return new Response(
-      JSON.stringify({ error: { message: `No thread_id. Matthew response: ${JSON.stringify(msgData).substring(0, 300)}` } }),
-      { status: 500, headers: { "Content-Type": "application/json" } },
-    );
+    return {
+      error: new Response(
+        JSON.stringify({ error: { message: `No thread_id. Matthew response: ${JSON.stringify(msgData).substring(0, 300)}` } }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      ),
+    };
   }
 
-  if (body.stream === false) {
-    return handleNonStreaming(threadId, accessToken, apiBase, body.model, allowedTools);
-  }
-
-  return handleStreaming(threadId, accessToken, apiBase, body.model, allowedTools);
+  return { threadId };
 }
 
 /**
@@ -317,8 +342,10 @@ export async function handleStreaming(
     controller.close();
   }
 
-  const stream = new ReadableStream({
-    async pull(controller) {
+  let currentEvent = "";
+
+  const source = {
+    async pull(controller: ReadableStreamDefaultController): Promise<void> {
       try {
         const { done, value } = await reader.read();
 
@@ -331,7 +358,7 @@ export async function handleStreaming(
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
 
-        let currentEvent = "";
+        let emitted = false;
 
         for (const line of lines) {
           if (line.startsWith("event:")) {
@@ -367,6 +394,7 @@ export async function handleStreaming(
             try {
               const data = JSON.parse(jsonStr) as { message?: string };
               if (data.message) {
+                emitted = true;
                 controller.enqueue(encoder.encode(chunk([
                   {
                     delta: { content: data.message, role: "assistant" },
@@ -382,6 +410,9 @@ export async function handleStreaming(
 
           currentEvent = "";
         }
+
+        // A chunk with only event lines emits nothing, and the stream never pulls again.
+        if (!emitted) return source.pull(controller);
       } catch (err) {
         controller.error(err);
       }
@@ -389,7 +420,9 @@ export async function handleStreaming(
     cancel() {
       reader.cancel();
     },
-  });
+  };
+
+  const stream = new ReadableStream(source);
 
   return new Response(stream, {
     status: 200,
@@ -423,7 +456,7 @@ function collectSseText(sseBody: string): string {
  * non-streaming path and by streaming-with-tools, which both need the
  * complete reply before they can answer.
  */
-async function readWholeReply(
+export async function readWholeReply(
   threadId: string,
   accessToken: string,
   apiBase: string,
