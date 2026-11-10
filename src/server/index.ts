@@ -1,8 +1,10 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse, Server } from "node:http";
-import { MATTHEW_API_BASE } from "../constants.js";
+import { getApiBase } from "../constants.js";
 import { handleMatthewChat } from "../core/chat.js";
 import type { OpenAIChatRequest } from "../core/chat.js";
+import { decodeCredentials } from "../core/credentials.js";
+import type { MatthewCredentials } from "../core/credentials.js";
 import { handleMatthewImages } from "../core/images.js";
 import type { OpenAIImageRequest } from "../core/images.js";
 import { toOpenAIModelList } from "../core/models.js";
@@ -31,34 +33,14 @@ export interface RunningServer {
   close(): Promise<void>;
 }
 
-interface MatthewCredentials {
-  accessToken: string;
-  sessionToken: string;
-  assistantId?: string;
-}
-
 function parseCredentials(authHeader: string | undefined): MatthewCredentials | null {
   if (!authHeader) return null;
   const match = /^Bearer\s+(.+)$/i.exec(authHeader.trim());
-  if (!match) return null;
-  const raw = match[1]?.trim();
+  const raw = match?.[1]?.trim();
   if (!raw) return null;
 
-  try {
-    const decoded = Buffer.from(raw, "base64").toString("utf-8");
-    const parsed = JSON.parse(decoded) as Partial<MatthewCredentials>;
-    if (parsed.accessToken && parsed.sessionToken) {
-      return {
-        accessToken: parsed.accessToken,
-        sessionToken: parsed.sessionToken,
-        assistantId: parsed.assistantId,
-      };
-    }
-  } catch {
-    // not a base64-encoded credentials blob — fall through to raw token
-  }
-
-  return { accessToken: raw, sessionToken: raw };
+  // A bare token that is not a credentials blob serves as both tokens.
+  return decodeCredentials(raw) ?? { accessToken: raw, sessionToken: raw };
 }
 
 async function readBody(req: IncomingMessage): Promise<string> {
@@ -114,7 +96,7 @@ async function pipeWebResponse(webResponse: Response, res: ServerResponse): Prom
 }
 
 export function createMatthewServer(options: ServerOptions = {}): Server {
-  const apiBase = options.apiBase || process.env.MATTHEW_API_BASE || MATTHEW_API_BASE;
+  const apiBase = options.apiBase || getApiBase();
 
   return createServer((req, res) => {
     void (async () => {
@@ -130,21 +112,20 @@ export function createMatthewServer(options: ServerOptions = {}): Server {
       }
 
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+      // The `/v1` prefix is optional, so routes are matched without it.
+      const path = url.pathname.replace(/^\/v1(?=\/)/, "");
 
       // Many OpenAI clients enumerate models before letting you pick one,
       // and show an empty or broken picker if this 404s. It needs no auth:
       // the list is static, and requiring a token here just breaks clients
       // that probe the endpoint before they are configured.
-      if (req.method === "GET" && (url.pathname === "/v1/models" || url.pathname === "/models")) {
+      if (req.method === "GET" && path === "/models") {
         sendJson(res, 200, toOpenAIModelList());
         return;
       }
 
-      const isChatCompletions =
-        url.pathname === "/v1/chat/completions" || url.pathname === "/chat/completions";
-
-      const isImageGenerations =
-        url.pathname === "/v1/images/generations" || url.pathname === "/images/generations";
+      const isChatCompletions = path === "/chat/completions";
+      const isImageGenerations = path === "/images/generations";
 
       if (req.method !== "POST" || !(isChatCompletions || isImageGenerations)) {
         sendJson(res, 404, { error: { message: "Not found" } });
@@ -166,21 +147,10 @@ export function createMatthewServer(options: ServerOptions = {}): Server {
       }
 
       try {
+        const assistantId = credentials.assistantId || "default";
         const webResponse = isImageGenerations
-          ? await handleMatthewImages(
-              body,
-              credentials.accessToken,
-              credentials.sessionToken,
-              credentials.assistantId || "default",
-              apiBase,
-            )
-          : await handleMatthewChat(
-              body,
-              credentials.accessToken,
-              credentials.sessionToken,
-              credentials.assistantId || "default",
-              apiBase,
-            );
+          ? await handleMatthewImages(body, credentials.accessToken, credentials.sessionToken, assistantId, apiBase)
+          : await handleMatthewChat(body, credentials.accessToken, credentials.sessionToken, assistantId, apiBase);
         await pipeWebResponse(webResponse, res);
       } catch (err) {
         sendJson(res, 500, {

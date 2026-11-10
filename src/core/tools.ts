@@ -198,6 +198,14 @@ function parseJson(raw: string): unknown {
   }
 }
 
+/** The calls in one parsed value: a single object, or an array of them. */
+function callsIn(value: unknown, allowed: Set<string> | null): OpenAIToolCall[] {
+  const candidates = Array.isArray(value) ? value : [value];
+  return candidates
+    .map((candidate) => normalizeCall(candidate, allowed))
+    .filter((call): call is OpenAIToolCall => call !== null);
+}
+
 export interface ParsedReply {
   /** Prose left over once the call blocks are lifted out; null if none. */
   content: string | null;
@@ -218,24 +226,14 @@ export function parseToolCalls(text: string, allowedNames?: string[] | null): Pa
 
   for (const pattern of [TAG_BLOCK, FENCED_BLOCK]) {
     const calls: OpenAIToolCall[] = [];
-    let remaining = text;
-
-    pattern.lastIndex = 0;
-    for (const match of text.matchAll(pattern)) {
-      const inner = match[1] ?? "";
-      // One block may hold an array of calls, or several concatenated
-      // objects; the array form is what models produce most often.
-      const parsed = parseJson(inner);
-      const candidates = Array.isArray(parsed) ? parsed : [parsed];
-      const found = candidates
-        .map((candidate) => normalizeCall(candidate, allowed))
-        .filter((call): call is OpenAIToolCall => call !== null);
-
-      if (found.length > 0) {
-        calls.push(...found);
-        remaining = remaining.replace(match[0], "");
-      }
-    }
+    // Only blocks that hold a call are lifted out. Other blocks stay as prose.
+    // One block may hold an array of calls, or several concatenated objects.
+    const remaining = text.replace(pattern, (block: string, inner: string) => {
+      const found = callsIn(parseJson(inner), allowed);
+      if (found.length === 0) return block;
+      calls.push(...found);
+      return "";
+    });
 
     if (calls.length > 0) {
       const content = remaining.trim();
@@ -244,11 +242,7 @@ export function parseToolCalls(text: string, allowedNames?: string[] | null): Pa
   }
 
   // A reply that is a bare JSON object and nothing else.
-  const whole = parseJson(text);
-  const bare = Array.isArray(whole)
-    ? whole.map((item) => normalizeCall(item, allowed)).filter((c): c is OpenAIToolCall => c !== null)
-    : [normalizeCall(whole, allowed)].filter((c): c is OpenAIToolCall => c !== null);
-
+  const bare = callsIn(parseJson(text), allowed);
   if (bare.length > 0) return { content: null, toolCalls: bare };
 
   return { content: text, toolCalls: [] };

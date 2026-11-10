@@ -1,14 +1,12 @@
 import { exec } from "node:child_process";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { Credential, Model, Plugin, Provider } from "@opencode/plugin";
 import {
   MATTHEW_PROVIDER_ID,
-  MATTHEW_API_BASE,
   MATTHEW_LOGIN_URL,
 } from "./constants.js";
 import { MATTHEW_MODELS } from "./core/models.js";
-import { loadAccounts, saveAccounts } from "./core/storage.js";
+import { encodeCredentials, fromUserBlob } from "./core/credentials.js";
+import type { MatthewCredentials, MatthewUserBlob } from "./core/credentials.js";
 import {
   wrapResponseWithUsageTracking,
   fetchMatthewUsage,
@@ -21,14 +19,6 @@ const SYSTEM_PROMPT =
   "Be concise, precise, and prioritize correctness over verbosity. " +
   "When editing code, output only the changed sections (diff-style) " +
   "instead of rewriting entire files unless asked.";
-
-function getOpenCodeConfigDir(): string {
-  if (process.env.OPENCODE_CONFIG_DIR) {
-    return process.env.OPENCODE_CONFIG_DIR;
-  }
-  const xdgConfig = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(xdgConfig, "opencode");
-}
 
 function openBrowser(url: string): void {
   const cmd =
@@ -57,8 +47,7 @@ function parseAccess(access: string): StoredAccess {
 export default Plugin.define({
   id: "matthew",
   async setup(ctx) {
-    const matthewApiBase = process.env.MATTHEW_API_BASE || MATTHEW_API_BASE;
-    const server = await startMatthewServer({ port: 0, apiBase: matthewApiBase });
+    const server = await startMatthewServer({ port: 0 });
     const providerID = Provider.ID.make(MATTHEW_PROVIDER_ID);
 
     await ctx.integration.transform((editor) => {
@@ -80,46 +69,12 @@ export default Plugin.define({
               const raw = input.trim();
               if (!raw) throw new Error("No login data pasted");
 
-              let accessToken: string;
-              let sessionToken: string;
-              let defaultAssistantId: string | undefined;
-              let userName: string | undefined;
-              let userNameTh: string | undefined;
-
-              if (raw.startsWith("{")) {
-                const user = JSON.parse(raw) as Record<string, unknown>;
-                accessToken = user.access_token as string;
-                sessionToken = user.token as string;
-                const da = user.defaultAssistant as Record<string, unknown> | undefined;
-                defaultAssistantId = da?.daid as string | undefined;
-                const ui = user.user_info as Record<string, unknown> | undefined;
-                userName = ui?.firstname_EN as string | undefined;
-                userNameTh = ui?.firstname_TH as string | undefined;
-              } else {
-                accessToken = raw;
-                sessionToken = raw;
-              }
+              const credentials: MatthewCredentials = raw.startsWith("{")
+                ? fromUserBlob(JSON.parse(raw) as MatthewUserBlob)
+                : { accessToken: raw, sessionToken: raw };
+              const { accessToken, sessionToken, assistantId } = credentials;
 
               if (!accessToken || !sessionToken) throw new Error("Login data is incomplete");
-
-              const configDir = getOpenCodeConfigDir();
-              const storage = (await loadAccounts(configDir)) ?? {
-                version: 1 as const,
-                accounts: [],
-                activeIndex: 0,
-              };
-
-              storage.accounts.push({
-                accessToken,
-                sessionToken,
-                defaultAssistantId,
-                userName,
-                userNameTh,
-                addedAt: Date.now(),
-                lastUsed: Date.now(),
-              });
-              storage.activeIndex = storage.accounts.length - 1;
-              await saveAccounts(configDir, storage);
 
               try {
                 const usage = await fetchMatthewUsage(accessToken);
@@ -131,11 +86,12 @@ export default Plugin.define({
                 // Dashboard usage fetch is best-effort
               }
 
+              const stored = JSON.stringify({ accessToken, sessionToken, defaultAssistantId: assistantId });
               return {
                 type: "oauth",
                 methodID: "login",
-                access: JSON.stringify({ accessToken, sessionToken, defaultAssistantId }),
-                refresh: JSON.stringify({ accessToken, sessionToken, defaultAssistantId }),
+                access: stored,
+                refresh: stored,
                 expires: Date.now() + 3600 * 1000,
               } as Credential.OAuth;
             },
@@ -170,8 +126,7 @@ export default Plugin.define({
         if (!credential || credential.type !== "oauth") return;
 
         const { accessToken, sessionToken, defaultAssistantId } = parseAccess(credential.access);
-        const blob = { accessToken, sessionToken, assistantId: defaultAssistantId };
-        event.headers.Authorization = `Bearer ${Buffer.from(JSON.stringify(blob)).toString("base64")}`;
+        event.headers.Authorization = `Bearer ${encodeCredentials({ accessToken, sessionToken, assistantId: defaultAssistantId })}`;
       },
       { providerID: MATTHEW_PROVIDER_ID },
     );

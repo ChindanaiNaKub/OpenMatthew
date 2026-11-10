@@ -1,10 +1,11 @@
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
 import {
-  MATTHEW_API_BASE,
   MATTHEW_PROVIDER_ID,
+  getApiBase,
+  getConfigDir,
 } from "../constants.js";
+import { createSseParser } from "./sse.js";
 import { estimateTokens } from "./tokens.js";
 
 export interface UsageStats {
@@ -25,15 +26,6 @@ export interface StoredUsage {
   history: UsageRecord[];
 }
 
-function getConfigDir(): string {
-  if (process.env.OPENCODE_CONFIG_DIR) {
-    return process.env.OPENCODE_CONFIG_DIR;
-  }
-  const xdgConfig =
-    process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(xdgConfig, "opencode");
-}
-
 function getUsagePath(): string {
   return join(getConfigDir(), "matthew-usage.json");
 }
@@ -44,32 +36,26 @@ function getUsageLogPath(): string {
 
 export async function loadUsage(): Promise<StoredUsage | null> {
   try {
-    const path = getUsagePath();
-    const content = await fs.readFile(path, "utf-8");
-    const data = JSON.parse(content) as StoredUsage;
+    const data = JSON.parse(await fs.readFile(getUsagePath(), "utf-8")) as StoredUsage;
     if (data.version !== 1 || !data.totalUsage || !Array.isArray(data.history)) {
       return null;
     }
     return data;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+  } catch {
     return null;
   }
 }
 
 export async function saveUsage(usage: StoredUsage): Promise<void> {
   const path = getUsagePath();
-  const configDir = dirname(path);
-  await fs.mkdir(configDir, { recursive: true });
+  await fs.mkdir(dirname(path), { recursive: true });
   await fs.writeFile(path, JSON.stringify(usage, null, 2), {
     encoding: "utf-8",
     mode: 0o600,
   });
 }
 
-export async function recordUsage(
-  record: UsageRecord,
-): Promise<void> {
+export async function recordUsage(record: UsageRecord): Promise<void> {
   const usage = (await loadUsage()) ?? {
     version: 1 as const,
     totalUsage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
@@ -104,75 +90,48 @@ export async function recordUsage(
   console.error(line);
 }
 
+/** Record usage in the background. A failed write must not reach the response. */
+function track(usage: UsageStats, model?: string): void {
+  recordUsage({ timestamp: Date.now(), model, usage }).catch(() => {});
+}
+
+/** Token counts from an OpenAI-style `usage` object, or a Matthew-style top-level payload. */
+function usageFromPayload(payload: Record<string, unknown>): UsageStats | null {
+  const source =
+    payload.usage && typeof payload.usage === "object"
+      ? (payload.usage as Record<string, unknown>)
+      : payload;
+  const prompt = (source.prompt_tokens ?? source.context_tokens ?? source.input_tokens ?? 0) as number;
+  const completion = (source.completion_tokens ?? source.response_tokens ?? source.output_tokens ?? 0) as number;
+  const total = (source.total_tokens as number) || prompt + completion;
+
+  if (prompt > 0 || completion > 0 || total > 0) {
+    return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: total || prompt + completion };
+  }
+  return null;
+}
+
 /**
  * Try to extract usage from a single SSE data payload string.
  * Handles both OpenAI-style `usage` and Matthew's potential custom formats.
  */
 export function extractUsageFromData(data: string): UsageStats | null {
-  const trimmed = data.trim();
-  if (!trimmed) return null;
-
-  // Remove "data: " prefix if present
-  const jsonStr = trimmed.startsWith("data:")
-    ? trimmed.slice(5).trim()
-    : trimmed;
-
-  if (!jsonStr || jsonStr === "[DONE]") return null;
+  const json = data.trim().replace(/^data:/, "").trim();
+  if (!json || json === "[DONE]") return null;
 
   try {
-    const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
-
-    // OpenAI standard format
-    if (parsed.usage && typeof parsed.usage === "object") {
-      const u = parsed.usage as Record<string, unknown>;
-      const prompt =
-        (u.prompt_tokens as number) ??
-        (u.input_tokens as number) ??
-        0;
-      const completion =
-        (u.completion_tokens as number) ??
-        (u.output_tokens as number) ??
-        0;
-      const total =
-        (u.total_tokens as number) ||
-        (prompt + completion);
-
-      if (prompt > 0 || completion > 0 || total > 0) {
-        return {
-          prompt_tokens: prompt,
-          completion_tokens: completion,
-          total_tokens: total || prompt + completion,
-        };
-      }
-    }
-
-    // Matthew custom format: look for tokens/context/response fields
-    const prompt =
-      (parsed.prompt_tokens as number) ??
-      (parsed.context_tokens as number) ??
-      (parsed.input_tokens as number) ??
-      0;
-    const completion =
-      (parsed.completion_tokens as number) ??
-      (parsed.response_tokens as number) ??
-      (parsed.output_tokens as number) ??
-      0;
-    const total =
-      (parsed.total_tokens as number) ||
-      (prompt + completion);
-
-    if (prompt > 0 || completion > 0 || total > 0) {
-      return {
-        prompt_tokens: prompt,
-        completion_tokens: completion,
-        total_tokens: total || prompt + completion,
-      };
-    }
+    return usageFromPayload(JSON.parse(json) as Record<string, unknown>);
   } catch {
     // Not valid JSON, ignore
+    return null;
   }
+}
 
-  return null;
+/** Completion-only usage estimated from reply text, for when the upstream sent no counts. */
+function estimatedUsage(text: string): UsageStats | null {
+  const completion = estimateTokens(text);
+  if (completion <= 0) return null;
+  return { prompt_tokens: 0, completion_tokens: completion, total_tokens: completion };
 }
 
 /**
@@ -184,75 +143,39 @@ export function createUsageTrackingStream(
   model?: string,
 ): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder();
-  let buffer = "";
+  const reader = source.getReader();
   let foundUsage: UsageStats | null = null;
   let responseText = "";
 
-  // Only complete lines reach here, so a data line split across chunks parses whole.
-  function consumeLine(line: string) {
-    if (!line.startsWith("data:")) return;
-    const usage = extractUsageFromData(line);
+  const sse = createSseParser((_event, data) => {
+    const usage = extractUsageFromData(data);
     if (usage) foundUsage = usage;
 
-    const dataStr = line.slice(5).trim();
-    if (!dataStr || dataStr === "[DONE]") return;
+    if (data === "[DONE]") return;
     try {
-      const parsed = JSON.parse(dataStr) as Record<string, unknown>;
-      const choices = parsed.choices as Array<Record<string, unknown>> | undefined;
-      if (choices && choices[0]) {
-        const delta = choices[0].delta as Record<string, unknown> | undefined;
-        const content = delta?.content as string | undefined;
-        if (content) responseText += content;
-      }
+      const choices = (JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> }).choices;
+      const content = choices?.[0]?.delta?.content;
+      if (content) responseText += content;
     } catch {
       // Ignore non-JSON or malformed lines
     }
-  }
+  });
 
   return new ReadableStream<Uint8Array>({
     start(controller) {
-      const reader = source.getReader();
-
       function push() {
         reader.read().then(({ done, value }) => {
           if (done) {
-            for (const line of buffer.split("\n")) consumeLine(line);
-
-            if (foundUsage) {
-              recordUsage({
-                timestamp: Date.now(),
-                model,
-                usage: foundUsage,
-              }).catch(() => {});
-            } else if (responseText.length > 0) {
-              // Fallback: estimate completion tokens from response text
-              const estimatedCompletion = estimateTokens(responseText);
-              if (estimatedCompletion > 0) {
-                recordUsage({
-                  timestamp: Date.now(),
-                  model,
-                  usage: {
-                    prompt_tokens: 0, // unknown from stream
-                    completion_tokens: estimatedCompletion,
-                    total_tokens: estimatedCompletion,
-                  },
-                }).catch(() => {});
-              }
-            }
-
+            sse.end();
+            const usage = foundUsage ?? estimatedUsage(responseText);
+            if (usage) track(usage, model);
             controller.close();
             return;
           }
 
           // Pass the chunk through unchanged
           controller.enqueue(value);
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          // Keep the last partial line in buffer
-          buffer = lines.pop() ?? "";
-          for (const line of lines) consumeLine(line);
-
+          sse.push(decoder.decode(value, { stream: true }));
           push();
         }).catch((err) => {
           controller.error(err);
@@ -263,7 +186,7 @@ export function createUsageTrackingStream(
     },
 
     cancel() {
-      source.cancel().catch(() => {});
+      reader.cancel().catch(() => {});
     },
   });
 }
@@ -291,44 +214,13 @@ export function wrapResponseWithUsageTracking(
     });
   }
 
-  // Handle non-streaming JSON responses
   if (contentType.includes("application/json")) {
-    const clone = response.clone();
-    clone
-      .text()
-      .then((text: string) => {
-        const parsed = JSON.parse(text) as Record<string, unknown>;
-        const usage =
-          extractUsageFromData(JSON.stringify(parsed)) ??
-          (parsed.usage && typeof parsed.usage === "object"
-            ? extractUsageFromData(
-                JSON.stringify({ usage: parsed.usage }),
-              )
-            : null);
-        if (usage) {
-          recordUsage({ timestamp: Date.now(), model, usage }).catch(
-            () => {},
-          );
-        } else {
-          // Fallback: estimate from response content
-          const choices = parsed.choices as Array<Record<string, unknown>> | undefined;
-          const msg = choices?.[0]?.message as Record<string, unknown> | undefined;
-          const content = msg?.content as string | undefined;
-          if (content) {
-            const estimated = estimateTokens(content);
-            recordUsage({
-              timestamp: Date.now(),
-              model,
-              usage: {
-                prompt_tokens: 0,
-                completion_tokens: estimated,
-                total_tokens: estimated,
-              },
-            }).catch(() => {});
-          }
-        }
-      })
-      .catch(() => {});
+    response.clone().json().then((parsed) => {
+      const payload = parsed as Record<string, unknown>;
+      const choices = payload.choices as Array<{ message?: { content?: string } }> | undefined;
+      const usage = usageFromPayload(payload) ?? estimatedUsage(choices?.[0]?.message?.content ?? "");
+      if (usage) track(usage, model);
+    }).catch(() => {});
   }
 
   return response;
@@ -339,6 +231,7 @@ export function wrapResponseWithUsageTracking(
  */
 export async function fetchMatthewUsage(
   accessToken: string,
+  apiBase = getApiBase(),
 ): Promise<{
   contextUsed?: number;
   contextLimit?: number;
@@ -346,10 +239,10 @@ export async function fetchMatthewUsage(
   responseLimit?: number;
 } | null> {
   const possibleEndpoints = [
-    `${MATTHEW_API_BASE}/api/user/usage`,
-    `${MATTHEW_API_BASE}/api/me/usage`,
-    `${MATTHEW_API_BASE}/api/creator/usage`,
-    `${MATTHEW_API_BASE}/api/dashboard/usage`,
+    `${apiBase}/api/user/usage`,
+    `${apiBase}/api/me/usage`,
+    `${apiBase}/api/creator/usage`,
+    `${apiBase}/api/dashboard/usage`,
   ];
 
   for (const url of possibleEndpoints) {

@@ -1,17 +1,13 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
+import { encodeCredentials, fromUserBlob } from "../core/credentials.js";
+import type { MatthewUserBlob } from "../core/credentials.js";
 
 /**
  * Interactive helper: paste the raw `localStorage.user` blob copied from
  * matthew.cmu.ac.th, get back the base64 bearer token the standalone
  * server expects. Removes the manual JSON-reshape-then-base64 step.
  */
-
-interface RawMatthewUser {
-  access_token?: string;
-  token?: string;
-  defaultAssistant?: { daid?: string };
-}
 
 async function readPastedLine(): Promise<string> {
   if (process.stdin.isTTY) {
@@ -34,9 +30,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  let user: RawMatthewUser;
+  let user: MatthewUserBlob;
   try {
-    user = JSON.parse(raw) as RawMatthewUser;
+    user = JSON.parse(raw) as MatthewUserBlob;
   } catch {
     console.error(
       "That doesn't look like valid JSON. Make sure you pasted the full output of copy(localStorage.user), not just part of it.",
@@ -45,11 +41,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  const accessToken = user.access_token;
-  const sessionToken = user.token;
-  const assistantId = user.defaultAssistant?.daid;
+  const credentials = fromUserBlob(user);
 
-  if (!accessToken || !sessionToken) {
+  if (!credentials.accessToken || !credentials.sessionToken) {
     console.error(
       "Missing access_token or token in the pasted JSON — this doesn't look like a Matthew login blob.",
     );
@@ -57,8 +51,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const credentials = JSON.stringify({ accessToken, sessionToken, assistantId });
-  const encoded = Buffer.from(credentials, "utf-8").toString("base64");
+  const encoded = encodeCredentials(credentials);
 
   console.log("\nYour bearer token (use this as the API key / Authorization header):\n");
   console.log(encoded);

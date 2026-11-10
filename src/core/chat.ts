@@ -6,6 +6,15 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { CLIENT_NAME } from "../constants.js";
+import {
+  createReplyParser,
+  jsonResponse,
+  openReplyStream,
+  openThread,
+  readWholeReply,
+  sseResponse,
+} from "./matthew.js";
 import {
   buildToolInstructions,
   formatToolCall,
@@ -14,6 +23,7 @@ import {
   toolNames,
 } from "./tools.js";
 import type { OpenAITool, OpenAIToolCall, ToolChoice } from "./tools.js";
+import type { UsageStats } from "./usage.js";
 
 /**
  * OpenAI allows `content` to be a string, a list of typed parts, or null
@@ -138,7 +148,7 @@ export async function handleMatthewChat(
   sessionToken: string,
   assistantId: string,
   apiBase: string,
-  clientName = "OpenMatthew",
+  clientName = CLIENT_NAME,
 ): Promise<Response> {
   // Matthew has no tool slot, so the schemas ride in front of the
   // conversation as prompt text. A null block means tools were not offered
@@ -162,128 +172,21 @@ export async function handleMatthewChat(
   return handleStreaming(threadId, accessToken, apiBase, body.model, allowedTools);
 }
 
-/**
- * Post one message as a fresh thread and return its id. Shared by chat and
- * image generation, since both start a thread the same way.
- */
-export async function openThread(
-  message: string,
-  accessToken: string,
-  sessionToken: string,
-  assistantId: string,
-  apiBase: string,
-  clientName: string,
-): Promise<{ threadId: string } | { error: Response }> {
-  const formData = new FormData();
-  formData.append("token", sessionToken);
-  formData.append("message", message);
-  formData.append("thread_id", "newchat");
-  formData.append("tid", "newchat");
-  formData.append("aid", assistantId);
-  formData.append("uname", clientName);
-  formData.append("uname_th", clientName);
+const DONE = "data: [DONE]\n\n";
 
-  const msgResponse = await fetch(`${apiBase}/api/thread_sse_message`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${accessToken}` },
-    body: formData,
-  });
-
-  if (!msgResponse.ok) {
-    const errorText = await msgResponse.text();
-    return {
-      error: new Response(
-        JSON.stringify({ error: { message: errorText } }),
-        { status: msgResponse.status, headers: { "Content-Type": "application/json" } },
-      ),
-    };
-  }
-
-  const msgText = await msgResponse.text();
-  let msgData: Record<string, unknown>;
-  try {
-    msgData = JSON.parse(msgText);
-  } catch {
-    return {
-      error: new Response(
-        JSON.stringify({ error: { message: `Matthew returned non-JSON: ${msgText.substring(0, 200)}` } }),
-        { status: 502, headers: { "Content-Type": "application/json" } },
-      ),
-    };
-  }
-
-  const newThread = msgData.new_thread as Record<string, unknown> | undefined;
-  const threadId =
-    (newThread?.thread_actual_id as string) ||
-    (msgData.thread_actual_id as string) ||
-    (msgData.thread_id as string);
-
-  if (!threadId) {
-    return {
-      error: new Response(
-        JSON.stringify({ error: { message: `No thread_id. Matthew response: ${JSON.stringify(msgData).substring(0, 300)}` } }),
-        { status: 500, headers: { "Content-Type": "application/json" } },
-      ),
-    };
-  }
-
-  return { threadId };
+function formatOpenAISSE(data: Record<string, unknown>): string {
+  return `data: ${JSON.stringify(data)}\n\n`;
 }
 
-/**
- * Matthew's response stream is authenticated by a short-lived ticket, not
- * by the access token: the frontend drives it with an `EventSource`, which
- * cannot set request headers, so the token is exchanged for a ticket first
- * and only the ticket travels on the stream URL.
- */
-async function buildStreamUrl(
-  threadId: string,
-  accessToken: string,
-  apiBase: string,
-): Promise<{ url: string } | { error: Response }> {
-  const ticketResponse = await fetch(`${apiBase}/api/thread_sse_ticket`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify({ thread_id: threadId }),
-  });
-
-  if (!ticketResponse.ok) {
-    const detail = await ticketResponse.text().catch(() => "");
-    const hint =
-      ticketResponse.status === 401
-        ? " — your Matthew session has expired, log in again for a fresh token"
-        : "";
-    return {
-      error: new Response(
-        JSON.stringify({
-          error: {
-            message: `Failed to obtain Matthew stream ticket (status ${ticketResponse.status})${hint}: ${detail.slice(0, 300)}`,
-          },
-        }),
-        { status: 502, headers: { "Content-Type": "application/json" } },
-      ),
-    };
-  }
-
-  const { ticket } = (await ticketResponse.json()) as { ticket?: string };
-
-  if (!ticket) {
-    return {
-      error: new Response(
-        JSON.stringify({ error: { message: "Matthew returned no stream ticket" } }),
-        { status: 502, headers: { "Content-Type": "application/json" } },
-      ),
-    };
-  }
-
-  return {
-    url:
-      `${apiBase}/api/thread_sse_response_stream?thread_id=${encodeURIComponent(threadId)}` +
-      `&ticket=${encodeURIComponent(ticket)}`,
+/** Builds SSE chunks that share one completion id and timestamp. */
+function chunkWriter(model: string): (choices: unknown[], extra?: Record<string, unknown>) => string {
+  const envelope = {
+    id: newCompletionId(),
+    object: "chat.completion.chunk",
+    created: nowSeconds(),
+    model,
   };
+  return (choices, extra = {}) => formatOpenAISSE({ ...envelope, choices, ...extra });
 }
 
 export async function handleStreaming(
@@ -301,238 +204,56 @@ export async function handleStreaming(
     return streamBuffered(threadId, accessToken, apiBase, model, allowedTools);
   }
 
-  const built = await buildStreamUrl(threadId, accessToken, apiBase);
-  if ("error" in built) return built.error;
+  const opened = await openReplyStream(threadId, accessToken, apiBase);
+  if ("error" in opened) return opened.error;
 
-  const upstream = await fetch(built.url);
-
-  if (!upstream.ok || !upstream.body) {
-    const bodyText = await upstream.text().catch(() => "");
-    return new Response(
-      JSON.stringify({
-        error: {
-          message: `Failed to connect to Matthew SSE (status ${upstream.status}): ${bodyText.slice(0, 300)}`,
-        },
-      }),
-      { status: 502, headers: { "Content-Type": "application/json" } },
-    );
-  }
-
-  const reader = upstream.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
   const encoder = new TextEncoder();
-  const completionId = newCompletionId();
-  const created = nowSeconds();
+  const decoder = new TextDecoder();
+  const reader = opened.body.getReader();
+  const chunk = chunkWriter(model);
+  const out: string[] = [];
 
-  const chunk = (choices: unknown[], extra: Record<string, unknown> = {}): string =>
-    formatOpenAISSE({
-      id: completionId,
-      object: "chat.completion.chunk",
-      created,
-      model,
-      choices,
-      ...extra,
-    });
+  const reply = createReplyParser({
+    onText: (content) => {
+      out.push(chunk([{ delta: { content, role: "assistant" }, finish_reason: null, index: 0 }]));
+    },
+    onError: (message) => {
+      out.push(
+        chunk([{ delta: { content: `\n[Error: ${message}]` }, finish_reason: "stop", index: 0 }]),
+        DONE,
+      );
+    },
+    onEnd: () => {
+      const usage = reply.usage();
+      out.push(
+        chunk([{ delta: {}, finish_reason: "stop", index: 0 }], usage ? { usage } : {}),
+        DONE,
+      );
+    },
+  });
 
-  const counts: MatthewCounts = {};
-
-  function enqueueFinish(controller: ReadableStreamDefaultController) {
-    const usage = openAIUsage(counts);
-    controller.enqueue(encoder.encode(chunk([
-      { delta: {}, finish_reason: "stop", index: 0 },
-    ], usage ? { usage } : {})));
-    controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-    controller.close();
-  }
-
-  let currentEvent = "";
-
-  const source = {
-    async pull(controller: ReadableStreamDefaultController): Promise<void> {
-      try {
+  // Pull until something is ready to send. A chunk with only event lines
+  // yields nothing, and the stream would never pull again.
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      while (out.length === 0 && !reply.done) {
         const { done, value } = await reader.read();
-
-        buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = done ? "" : lines.pop() || "";
-
-        let emitted = false;
-
-        for (const line of lines) {
-          if (line.startsWith("event:")) {
-            currentEvent = line.slice(6).trim();
-            continue;
-          }
-
-          if (currentEvent === "complete") {
-            enqueueFinish(controller);
-            return;
-          }
-
-          if (currentEvent === "error") {
-            const jsonStr = line.startsWith("data:") ? line.slice(5).trim() : "";
-            const errMsg = jsonStr ? jsonStr : "Stream error";
-            controller.enqueue(encoder.encode(chunk([
-              { delta: { content: `\n[Error: ${errMsg}]` }, finish_reason: "stop", index: 0 },
-            ])));
-            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-            controller.close();
-            return;
-          }
-
-          if (!line.startsWith("data:")) {
-            currentEvent = "";
-            continue;
-          }
-
-          const jsonStr = line.slice(5).trim();
-          if (!jsonStr) continue;
-
-          recordCount(counts, currentEvent, jsonStr);
-
-          if (currentEvent === "" || currentEvent === "message") {
-            try {
-              const data = JSON.parse(jsonStr) as { message?: string };
-              if (data.message) {
-                emitted = true;
-                controller.enqueue(encoder.encode(chunk([
-                  {
-                    delta: { content: data.message, role: "assistant" },
-                    finish_reason: null,
-                    index: 0,
-                  },
-                ])));
-              }
-            } catch {
-              // skip non-JSON
-            }
-          }
-
-          currentEvent = "";
-        }
-
         if (done) {
-          enqueueFinish(controller);
-          return;
+          reply.push(decoder.decode());
+          reply.end();
+        } else {
+          reply.push(decoder.decode(value, { stream: true }));
         }
-
-        // A chunk with only event lines emits nothing, and the stream never pulls again.
-        if (!emitted) return source.pull(controller);
-      } catch (err) {
-        controller.error(err);
       }
+      if (out.length > 0) controller.enqueue(encoder.encode(out.splice(0).join("")));
+      if (reply.done) controller.close();
     },
     cancel() {
       reader.cancel();
     },
-  };
-
-  const stream = new ReadableStream(source);
-
-  return new Response(stream, {
-    status: 200,
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    },
   });
-}
 
-type OpenAIUsage = { prompt_tokens: number; completion_tokens: number; total_tokens: number };
-
-interface MatthewCounts {
-  prompt?: number;
-  completion?: number;
-}
-
-function recordCount(counts: MatthewCounts, event: string, data: string): void {
-  const value = Number(data);
-  if (!Number.isFinite(value)) return;
-  if (event === "ptoken") counts.prompt = value;
-  else if (event === "ctoken") counts.completion = value;
-}
-
-function openAIUsage(counts: MatthewCounts): OpenAIUsage | null {
-  if (counts.prompt === undefined && counts.completion === undefined) return null;
-  const prompt = counts.prompt ?? 0;
-  const completion = counts.completion ?? 0;
-  return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion };
-}
-
-/** Concatenate the `message` fields out of a whole Matthew SSE body, with its token counts. */
-function collectSseText(sseBody: string): { text: string; usage: OpenAIUsage | null } {
-  let fullContent = "";
-  let currentEvent = "";
-  const counts: MatthewCounts = {};
-
-  for (const line of sseBody.split("\n")) {
-    if (line.startsWith("event:")) {
-      currentEvent = line.slice(6).trim();
-      continue;
-    }
-
-    if (currentEvent === "complete") break;
-
-    if (currentEvent === "error") {
-      const errMsg = line.startsWith("data:") ? line.slice(5).trim() : "Stream error";
-      fullContent += `\n[Error: ${errMsg}]`;
-      break;
-    }
-
-    if (!line.startsWith("data:")) {
-      currentEvent = "";
-      continue;
-    }
-
-    recordCount(counts, currentEvent, line.slice(5).trim());
-
-    if (currentEvent === "" || currentEvent === "message") {
-      try {
-        const data = JSON.parse(line.slice(5).trim()) as { message?: string };
-        if (data.message) fullContent += data.message;
-      } catch {
-        // skip
-      }
-    }
-
-    currentEvent = "";
-  }
-
-  return { text: fullContent, usage: openAIUsage(counts) };
-}
-
-/**
- * Read Matthew's stream to the end and hand back its text. Shared by the
- * non-streaming path and by streaming-with-tools, which both need the
- * complete reply before they can answer.
- */
-export async function readWholeReply(
-  threadId: string,
-  accessToken: string,
-  apiBase: string,
-): Promise<{ text: string; usage: OpenAIUsage | null } | { error: Response }> {
-  const built = await buildStreamUrl(threadId, accessToken, apiBase);
-  if ("error" in built) return built;
-
-  const upstream = await fetch(built.url);
-
-  if (!upstream.ok) {
-    const bodyText = await upstream.text().catch(() => "");
-    return {
-      error: new Response(
-        JSON.stringify({
-          error: {
-            message: `Failed to connect to Matthew SSE (status ${upstream.status}): ${bodyText.slice(0, 300)}`,
-          },
-        }),
-        { status: 502, headers: { "Content-Type": "application/json" } },
-      ),
-    };
-  }
-
-  return collectSseText(await upstream.text());
+  return sseResponse(stream);
 }
 
 /** Emit an already-complete reply as a short OpenAI SSE stream. */
@@ -547,59 +268,27 @@ async function streamBuffered(
   if ("error" in reply) return reply.error;
 
   const { content, toolCalls } = parseToolCalls(reply.text, allowedTools);
-  const envelope = {
-    id: newCompletionId(),
-    object: "chat.completion.chunk",
-    created: nowSeconds(),
-    model,
-  };
+  const chunk = chunkWriter(model);
 
-  const parts: string[] = [
-    formatOpenAISSE({
-      ...envelope,
-      choices: [{ delta: { role: "assistant" }, finish_reason: null, index: 0 }],
-    }),
-  ];
+  const parts: string[] = [chunk([{ delta: { role: "assistant" }, finish_reason: null, index: 0 }])];
 
   if (content) {
-    parts.push(
-      formatOpenAISSE({
-        ...envelope,
-        choices: [{ delta: { content }, finish_reason: null, index: 0 }],
-      }),
-    );
+    parts.push(chunk([{ delta: { content }, finish_reason: null, index: 0 }]));
   }
 
   if (toolCalls.length > 0) {
-    parts.push(
-      formatOpenAISSE({
-        ...envelope,
-        choices: [
-          { delta: { tool_calls: toolCallDeltas(toolCalls) }, finish_reason: null, index: 0 },
-        ],
-      }),
-    );
+    parts.push(chunk([{ delta: { tool_calls: toolCallDeltas(toolCalls) }, finish_reason: null, index: 0 }]));
   }
 
   parts.push(
-    formatOpenAISSE({
-      ...envelope,
-      choices: [
-        { delta: {}, finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop", index: 0 },
-      ],
-      ...(reply.usage ? { usage: reply.usage } : {}),
-    }),
-    "data: [DONE]\n\n",
+    chunk(
+      [{ delta: {}, finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop", index: 0 }],
+      reply.usage ? { usage: reply.usage } : {},
+    ),
+    DONE,
   );
 
-  return new Response(parts.join(""), {
-    status: 200,
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    },
-  });
+  return sseResponse(parts.join(""));
 }
 
 export async function handleNonStreaming(
@@ -619,23 +308,18 @@ export async function handleNonStreaming(
   const message: Record<string, unknown> = { role: "assistant", content };
   if (toolCalls.length > 0) message.tool_calls = toolCalls;
 
-  return new Response(
-    JSON.stringify({
-      id: newCompletionId(),
-      object: "chat.completion",
-      created: nowSeconds(),
-      model,
-      choices: [{
-        message,
-        finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop",
-        index: 0,
-      }],
-      usage: reply.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-    }),
-    { status: 200, headers: { "Content-Type": "application/json" } },
-  );
-}
+  const usage: UsageStats = reply.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
 
-export function formatOpenAISSE(data: Record<string, unknown>): string {
-  return `data: ${JSON.stringify(data)}\n\n`;
+  return jsonResponse(200, {
+    id: newCompletionId(),
+    object: "chat.completion",
+    created: nowSeconds(),
+    model,
+    choices: [{
+      message,
+      finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop",
+      index: 0,
+    }],
+    usage,
+  });
 }
