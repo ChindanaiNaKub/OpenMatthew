@@ -325,19 +325,23 @@ export async function handleStreaming(
   const completionId = newCompletionId();
   const created = nowSeconds();
 
-  const chunk = (choices: unknown[]): string =>
+  const chunk = (choices: unknown[], extra: Record<string, unknown> = {}): string =>
     formatOpenAISSE({
       id: completionId,
       object: "chat.completion.chunk",
       created,
       model,
       choices,
+      ...extra,
     });
 
+  const counts: MatthewCounts = {};
+
   function enqueueFinish(controller: ReadableStreamDefaultController) {
+    const usage = openAIUsage(counts);
     controller.enqueue(encoder.encode(chunk([
       { delta: {}, finish_reason: "stop", index: 0 },
-    ])));
+    ], usage ? { usage } : {})));
     controller.enqueue(encoder.encode("data: [DONE]\n\n"));
     controller.close();
   }
@@ -384,6 +388,8 @@ export async function handleStreaming(
 
           const jsonStr = line.slice(5).trim();
           if (!jsonStr) continue;
+
+          recordCount(counts, currentEvent, jsonStr);
 
           if (currentEvent === "" || currentEvent === "message") {
             try {
@@ -434,10 +440,32 @@ export async function handleStreaming(
   });
 }
 
-/** Concatenate the `message` fields out of a whole Matthew SSE body. */
-function collectSseText(sseBody: string): string {
+type OpenAIUsage = { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+
+interface MatthewCounts {
+  prompt?: number;
+  completion?: number;
+}
+
+function recordCount(counts: MatthewCounts, event: string, data: string): void {
+  const value = Number(data);
+  if (!Number.isFinite(value)) return;
+  if (event === "ptoken") counts.prompt = value;
+  else if (event === "ctoken") counts.completion = value;
+}
+
+function openAIUsage(counts: MatthewCounts): OpenAIUsage | null {
+  if (counts.prompt === undefined && counts.completion === undefined) return null;
+  const prompt = counts.prompt ?? 0;
+  const completion = counts.completion ?? 0;
+  return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion };
+}
+
+/** Concatenate the `message` fields out of a whole Matthew SSE body, with its token counts. */
+function collectSseText(sseBody: string): { text: string; usage: OpenAIUsage | null } {
   let fullContent = "";
   let currentEvent = "";
+  const counts: MatthewCounts = {};
 
   for (const line of sseBody.split("\n")) {
     if (line.startsWith("event:")) {
@@ -458,6 +486,8 @@ function collectSseText(sseBody: string): string {
       continue;
     }
 
+    recordCount(counts, currentEvent, line.slice(5).trim());
+
     if (currentEvent === "" || currentEvent === "message") {
       try {
         const data = JSON.parse(line.slice(5).trim()) as { message?: string };
@@ -470,7 +500,7 @@ function collectSseText(sseBody: string): string {
     currentEvent = "";
   }
 
-  return fullContent;
+  return { text: fullContent, usage: openAIUsage(counts) };
 }
 
 /**
@@ -482,7 +512,7 @@ export async function readWholeReply(
   threadId: string,
   accessToken: string,
   apiBase: string,
-): Promise<{ text: string } | { error: Response }> {
+): Promise<{ text: string; usage: OpenAIUsage | null } | { error: Response }> {
   const built = await buildStreamUrl(threadId, accessToken, apiBase);
   if ("error" in built) return built;
 
@@ -502,7 +532,7 @@ export async function readWholeReply(
     };
   }
 
-  return { text: collectSseText(await upstream.text()) };
+  return collectSseText(await upstream.text());
 }
 
 /** Emit an already-complete reply as a short OpenAI SSE stream. */
@@ -557,6 +587,7 @@ async function streamBuffered(
       choices: [
         { delta: {}, finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop", index: 0 },
       ],
+      ...(reply.usage ? { usage: reply.usage } : {}),
     }),
     "data: [DONE]\n\n",
   );
@@ -599,7 +630,7 @@ export async function handleNonStreaming(
         finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop",
         index: 0,
       }],
-      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      usage: reply.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     }),
     { status: 200, headers: { "Content-Type": "application/json" } },
   );

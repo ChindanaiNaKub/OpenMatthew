@@ -215,6 +215,53 @@ test("reports an error event the same way when the reply is buffered", async () 
   }
 });
 
+test("reports Matthew's token counts as usage when streaming", async () => {
+  const fake = await startFakeMatthew({ usage: true });
+  try {
+    const text = await (
+      await chat(fake, { model: "gpt-5.2", messages: [{ role: "user", content: "hi" }] })
+    ).text();
+
+    assert.match(text, /"usage":\{"prompt_tokens":12,"completion_tokens":5,"total_tokens":17\}/);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("reports Matthew's token counts as usage when tools make it buffer", async () => {
+  const fake = await startFakeMatthew({ usage: true });
+  try {
+    const text = await (
+      await chat(fake, {
+        model: "gpt-5.2",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [{ type: "function", function: { name: "get_weather", parameters: { type: "object" } } }],
+      })
+    ).text();
+
+    assert.match(text, /"usage":\{"prompt_tokens":12,"completion_tokens":5,"total_tokens":17\}/);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("reports Matthew's token counts as usage when not streaming", async () => {
+  const fake = await startFakeMatthew({ usage: true });
+  try {
+    const body = (await (
+      await chat(fake, {
+        model: "gpt-5.2",
+        stream: false,
+        messages: [{ role: "user", content: "hi" }],
+      })
+    ).json()) as { usage: unknown };
+
+    assert.deepEqual(body.usage, { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 });
+  } finally {
+    await fake.close();
+  }
+});
+
 test("collects the full reply when stream is false", async () => {
   const fake = await startFakeMatthew();
   try {
