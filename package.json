@@ -53,7 +53,7 @@
     "typescript": "^5.8.0"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^0.15.30"
+    "@opencode/plugin": "^2.2.6"
   },
   "keywords": [
     "matthew",

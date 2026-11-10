@@ -88,7 +88,7 @@ Matthew ignores the model you request. Your default assistant answers every requ
 
 ## Limits
 
-- **The OpenCode plugin does not load in OpenCode v2 yet.** Its code still uses the v1 plugin API. Use the server until the plugin is updated.
+- **The OpenCode plugin targets OpenCode v2.** It runs on `@opencode/plugin`. Older OpenCode v1 releases do not load it.
 - **Tool calls are emulated.** The server writes tool schemas into the prompt and parses the reply. It is less reliable than a native tool API.
 - **Matthew's API is undocumented.** When something breaks, run `npm run check-api`. It reads Matthew's own frontend bundle and reports changed assumptions.
 

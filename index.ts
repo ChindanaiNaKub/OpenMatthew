@@ -1,4 +1,4 @@
-export { MatthewOAuthPlugin } from "./src/plugin.js";
+export { default, default as MatthewOAuthPlugin } from "./src/plugin.js";
 
 export { createMatthewServer, startMatthewServer } from "./src/server/index.js";
 export type { ServerOptions, RunningServer } from "./src/server/index.js";
