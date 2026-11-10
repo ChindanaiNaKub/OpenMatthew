@@ -56,7 +56,6 @@ Set up OpenMatthew on this computer. Repo: https://github.com/ChindanaiNaKub/Ope
 
 - **Any OpenAI-compatible app:** use the settings in step 4 above.
 - **Hermes Agent:** in `~/.hermes/config.yaml`, set `provider: custom`, `base_url: http://127.0.0.1:4141/v1`, and your token as `api_key`.
-- **Cursor:** `127.0.0.1` does not work. Cursor calls its own backend, which cannot reach your computer. Use a tunnel such as `ngrok http 4141` and set the public HTTPS URL as the base URL.
 
 ## Images
 

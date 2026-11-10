@@ -10,11 +10,9 @@
   protocol, and that is parsed back into OpenAI `tool_calls` with
   `finish_reason: "tool_calls"`. Covers `tool_choice`, several calls per
   reply, and `role: "tool"` results on the following turn. This is what
-  agent platforms drive their loop with — without it Hermes Agent, thclaws
-  and Cursor could chat but never act.
-- **Per-platform setup notes** in the README for Hermes Agent, thclaws and
-  Cursor, including the tunnel Cursor needs because it cannot reach
-  loopback.
+  agent platforms drive their loop with — without it Hermes Agent and thclaws
+  could chat but never act.
+- **Per-platform setup notes** in the README for Hermes Agent.
 
 - Models `gpt-6.1-sol`, `gpt-6-sol`, and `gpt-6-luna`, which Matthew added
   in October 2026.
