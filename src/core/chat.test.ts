@@ -20,7 +20,7 @@ interface FakeMatthew {
 }
 
 async function startFakeMatthew(
-  options: { ticketStatus?: number; reply?: string[]; usage?: boolean } = {},
+  options: { ticketStatus?: number; reply?: string[]; usage?: boolean; raw?: string } = {},
 ): Promise<FakeMatthew> {
   let sentFields: Record<string, string> = {};
   let streamUrl = "";
@@ -71,6 +71,10 @@ async function startFakeMatthew(
           return;
         }
         res.writeHead(200, { "Content-Type": "text/event-stream" });
+        if (options.raw !== undefined) {
+          res.end(options.raw);
+          return;
+        }
         for (const chunk of options.reply ?? ["Hel", "lo"]) {
           res.write(`data: ${JSON.stringify({ message: chunk })}\n\n`);
         }
@@ -149,6 +153,64 @@ test("ends the stream when usage events arrive after the reply", async () => {
     assert.match(text, /data: \[DONE\]/);
   } finally {
     clearTimeout(timer);
+    await fake.close();
+  }
+});
+
+test("keeps a final SSE line that has no trailing newline", async () => {
+  const fake = await startFakeMatthew({
+    raw: 'data: {"message":"Hel"}\n\ndata: {"message":"lo"}',
+  });
+  try {
+    const response = await chat(fake, {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    const text = await response.text();
+
+    assert.match(text, /"content":"Hel"/);
+    assert.match(text, /"content":"lo"/);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("a blank line ends an event name, so the next message is kept", async () => {
+  const fake = await startFakeMatthew({
+    raw: 'event: ptoken\ndata:\n\ndata: {"message":"lo"}\n\nevent: complete\ndata: {}\n\n',
+  });
+  try {
+    const response = await chat(fake, {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    const text = await response.text();
+
+    assert.match(text, /"content":"lo"/);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("reports an error event the same way when the reply is buffered", async () => {
+  const raw =
+    'data: {"message":"Hel"}\n\nevent: error\ndata: {"message":"boom"}\n\n';
+  const fake = await startFakeMatthew({ raw });
+  try {
+    const streamed = await (
+      await chat(fake, { model: "gpt-5.2", messages: [{ role: "user", content: "hi" }] })
+    ).text();
+    const buffered = await (
+      await chat(fake, {
+        model: "gpt-5.2",
+        stream: false,
+        messages: [{ role: "user", content: "hi" }],
+      })
+    ).json() as { choices: [{ message: { content: string } }] };
+
+    assert.match(streamed, /\[Error: .*boom/);
+    assert.match(buffered.choices[0].message.content, /\[Error: .*boom/);
+  } finally {
     await fake.close();
   }
 });

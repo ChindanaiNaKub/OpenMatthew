@@ -188,6 +188,27 @@ export function createUsageTrackingStream(
   let foundUsage: UsageStats | null = null;
   let responseText = "";
 
+  // Only complete lines reach here, so a data line split across chunks parses whole.
+  function consumeLine(line: string) {
+    if (!line.startsWith("data:")) return;
+    const usage = extractUsageFromData(line);
+    if (usage) foundUsage = usage;
+
+    const dataStr = line.slice(5).trim();
+    if (!dataStr || dataStr === "[DONE]") return;
+    try {
+      const parsed = JSON.parse(dataStr) as Record<string, unknown>;
+      const choices = parsed.choices as Array<Record<string, unknown>> | undefined;
+      if (choices && choices[0]) {
+        const delta = choices[0].delta as Record<string, unknown> | undefined;
+        const content = delta?.content as string | undefined;
+        if (content) responseText += content;
+      }
+    } catch {
+      // Ignore non-JSON or malformed lines
+    }
+  }
+
   return new ReadableStream<Uint8Array>({
     start(controller) {
       const reader = source.getReader();
@@ -195,16 +216,7 @@ export function createUsageTrackingStream(
       function push() {
         reader.read().then(({ done, value }) => {
           if (done) {
-            // Process any remaining data in buffer
-            if (buffer.trim()) {
-              const lines = buffer.split("\n");
-              for (const line of lines) {
-                if (line.startsWith("data:")) {
-                  const usage = extractUsageFromData(line);
-                  if (usage) foundUsage = usage;
-                }
-              }
-            }
+            for (const line of buffer.split("\n")) consumeLine(line);
 
             if (foundUsage) {
               recordUsage({
@@ -235,41 +247,11 @@ export function createUsageTrackingStream(
           // Pass the chunk through unchanged
           controller.enqueue(value);
 
-          // Also parse it for usage and accumulate text
-          const chunk = decoder.decode(value, { stream: true });
-          buffer += chunk;
-
-          // Extract text content from SSE data lines for fallback estimation
-          const textLines = chunk.split("\n");
-          for (const tl of textLines) {
-            if (tl.startsWith("data:")) {
-              const dataStr = tl.slice(5).trim();
-              if (dataStr && dataStr !== "[DONE]") {
-                try {
-                  const parsed = JSON.parse(dataStr) as Record<string, unknown>;
-                  const choices = parsed.choices as Array<Record<string, unknown>> | undefined;
-                  if (choices && choices[0]) {
-                    const delta = choices[0].delta as Record<string, unknown> | undefined;
-                    const content = delta?.content as string | undefined;
-                    if (content) responseText += content;
-                  }
-                } catch {
-                  // Ignore non-JSON or malformed lines
-                }
-              }
-            }
-          }
-
+          buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split("\n");
           // Keep the last partial line in buffer
           buffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            if (line.startsWith("data:")) {
-              const usage = extractUsageFromData(line);
-              if (usage) foundUsage = usage;
-            }
-          }
+          for (const line of lines) consumeLine(line);
 
           push();
         }).catch((err) => {

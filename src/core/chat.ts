@@ -349,14 +349,9 @@ export async function handleStreaming(
       try {
         const { done, value } = await reader.read();
 
-        if (done) {
-          enqueueFinish(controller);
-          return;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
+        buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
+        buffer = done ? "" : lines.pop() || "";
 
         let emitted = false;
 
@@ -411,6 +406,11 @@ export async function handleStreaming(
           currentEvent = "";
         }
 
+        if (done) {
+          enqueueFinish(controller);
+          return;
+        }
+
         // A chunk with only event lines emits nothing, and the stream never pulls again.
         if (!emitted) return source.pull(controller);
       } catch (err) {
@@ -437,15 +437,37 @@ export async function handleStreaming(
 /** Concatenate the `message` fields out of a whole Matthew SSE body. */
 function collectSseText(sseBody: string): string {
   let fullContent = "";
+  let currentEvent = "";
 
   for (const line of sseBody.split("\n")) {
-    if (!line.startsWith("data:")) continue;
-    try {
-      const data = JSON.parse(line.slice(5).trim()) as { message?: string };
-      if (data.message) fullContent += data.message;
-    } catch {
-      // skip
+    if (line.startsWith("event:")) {
+      currentEvent = line.slice(6).trim();
+      continue;
     }
+
+    if (currentEvent === "complete") break;
+
+    if (currentEvent === "error") {
+      const errMsg = line.startsWith("data:") ? line.slice(5).trim() : "Stream error";
+      fullContent += `\n[Error: ${errMsg}]`;
+      break;
+    }
+
+    if (!line.startsWith("data:")) {
+      currentEvent = "";
+      continue;
+    }
+
+    if (currentEvent === "" || currentEvent === "message") {
+      try {
+        const data = JSON.parse(line.slice(5).trim()) as { message?: string };
+        if (data.message) fullContent += data.message;
+      } catch {
+        // skip
+      }
+    }
+
+    currentEvent = "";
   }
 
   return fullContent;
