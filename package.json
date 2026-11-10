@@ -1,6 +1,6 @@
 {
   "name": "opencode-matthew-auth",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Use your CMU Matthew AI account from any OpenAI-compatible agent platform, or as an OpenCode plugin",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
