@@ -57,6 +57,38 @@ Set up OpenMatthew on this computer. Repo: https://github.com/ChindanaiNaKub/Ope
 - **Any OpenAI-compatible app:** use the settings in step 4 above.
 - **Hermes Agent:** in `~/.hermes/config.yaml`, set `provider: custom`, `base_url: http://127.0.0.1:4141/v1`, and your token as `api_key`.
 
+## OpenCode
+
+OpenCode uses the plugin in this repo. The plugin starts its own local server, so you do not run `npm run serve`. You need OpenCode v2. Older v1 releases do not load the plugin.
+
+1. Install the plugin. In your OpenCode config (`~/.config/opencode/opencode.json`), add it to `plugins`:
+
+   ```json
+   {
+     "plugins": ["opencode-matthew-auth"]
+   }
+   ```
+
+   To use it only in this repo, skip this step. The repo's `opencode.json` already loads it. Run `opencode` from the repo folder.
+
+2. Start OpenCode and run `/connect`. Choose **CMU Matthew AI**, then **Login with CMU Account**.
+
+3. A browser opens to [matthew.cmu.ac.th](https://matthew.cmu.ac.th). Log in. Press `F12`, open the **Console** tab, and run `copy(localStorage.user)`.
+
+4. Return to OpenCode and paste the result. The login is saved. Your token stays on your computer.
+
+5. Pick a model from **CMU Matthew AI**, such as `gpt-6.1-sol`. Remember that Matthew answers with your default assistant. See [Models](#models).
+
+Optional settings, set as environment variables before you start OpenCode:
+
+| Variable | Description |
+|----------|-------------|
+| `MATTHEW_OVERRIDE_SYSTEM` | Set to `0` to keep OpenCode's own system prompt. Default: the plugin replaces it with a short engineering prompt. |
+| `MATTHEW_SYSTEM_PROMPT` | Your own system prompt text. Used when the override is on. |
+| `MATTHEW_API_BASE` | Override the Matthew API base URL |
+
+The plugin warns when one message is large, over about 8,000 tokens. Split big requests, or use `@file` to reference files.
+
 ## Images
 
 `POST /v1/images/generations` returns an image URL, or base64 with `"response_format": "b64_json"`:
