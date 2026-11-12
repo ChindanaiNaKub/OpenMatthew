@@ -104,6 +104,17 @@ curl http://127.0.0.1:4141/v1/images/generations \
 - Matthew allows 15 images per day. Each call counts.
 - Only `n: 1` is supported. `size` and `model` are ignored.
 
+## Usage
+
+`GET /v1/usage` returns the token totals this computer has recorded. Use the same key as chat:
+
+```bash
+curl http://127.0.0.1:4141/v1/usage \
+  -H "Authorization: Bearer <token>"
+```
+
+Counts come from Matthew when it sends them, and are estimated from the reply text otherwise. Matthew enforces the image cap, and this route does not report it.
+
 ## Models
 
 These are the model ids Matthew ships:

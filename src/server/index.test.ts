@@ -1,5 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { saveUsage } from "../core/usage.js";
 import { createMatthewServer } from "./index.js";
 
 async function withServer(
@@ -106,4 +110,46 @@ test("unknown routes 404", async () => {
     const response = await fetch(`${base}/nope`);
     assert.equal(response.status, 404);
   });
+});
+
+test("GET /v1/usage reports recorded totals and requires a key", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "matthew-usage-"));
+  const previous = process.env.OPENCODE_CONFIG_DIR;
+  process.env.OPENCODE_CONFIG_DIR = dir;
+  try {
+    await withServer(async (base) => {
+      const noKey = await fetch(`${base}/v1/usage`);
+      assert.equal(noKey.status, 401);
+
+      const empty = (await fetch(`${base}/v1/usage`, {
+        headers: { Authorization: "Bearer key" },
+      }).then((response) => response.json())) as {
+        object: string;
+        total: unknown;
+        requests: number;
+      };
+      assert.equal(empty.object, "usage");
+      assert.deepEqual(empty.total, { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 });
+      assert.equal(empty.requests, 0);
+
+      await saveUsage({
+        version: 1,
+        totalUsage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
+        history: [{
+          timestamp: 1,
+          usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
+        }],
+      });
+
+      const body = (await fetch(`${base}/v1/usage`, {
+        headers: { Authorization: "Bearer key" },
+      }).then((response) => response.json())) as { total: unknown; requests: number };
+      assert.deepEqual(body.total, { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 });
+      assert.equal(body.requests, 1);
+    });
+  } finally {
+    if (previous === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+    else process.env.OPENCODE_CONFIG_DIR = previous;
+    await rm(dir, { recursive: true, force: true });
+  }
 });

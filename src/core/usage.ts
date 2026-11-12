@@ -285,6 +285,20 @@ export async function fetchMatthewUsage(
   return null;
 }
 
+export interface UsageSummary {
+  total: UsageStats;
+  requests: number;
+}
+
+/** The accumulated totals, without the raw history. */
+export async function usageSummary(): Promise<UsageSummary> {
+  const usage = await loadUsage();
+  return {
+    total: usage?.totalUsage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    requests: usage?.history.length ?? 0,
+  };
+}
+
 /**
  * Print current accumulated usage to the console.
  */
