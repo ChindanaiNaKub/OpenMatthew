@@ -5,7 +5,7 @@ import {
   MATTHEW_LOGIN_URL,
 } from "./constants.js";
 import { MATTHEW_MODELS } from "./core/models.js";
-import { encodeCredentials, fromUserBlob } from "./core/credentials.js";
+import { credentialExpiry, encodeCredentials, fromUserBlob } from "./core/credentials.js";
 import type { MatthewCredentials, MatthewUserBlob } from "./core/credentials.js";
 import { fetchMatthewUsage } from "./core/usage.js";
 import { estimateTokens, checkBudget, formatBudget } from "./core/tokens.js";
@@ -89,7 +89,7 @@ export default Plugin.define({
                 methodID: "login",
                 access: stored,
                 refresh: stored,
-                expires: Date.now() + 3600 * 1000,
+                expires: credentialExpiry(accessToken),
               } as Credential.OAuth;
             },
           };
