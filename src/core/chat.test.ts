@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import { handleMatthewChat, serializeConversation } from "./chat.js";
+import type { OpenAITool } from "./tools.js";
 
 /**
  * A stand-in for Matthew that enforces the parts of its protocol we
@@ -15,14 +16,26 @@ interface FakeMatthew {
   base: string;
   sentMessage(): string;
   sentFields(): Record<string, string>;
+  messages(): string[];
+  threadIds(): string[];
   streamUrl(): string;
   close(): Promise<void>;
 }
 
 async function startFakeMatthew(
-  options: { ticketStatus?: number; reply?: string[]; usage?: boolean; raw?: string } = {},
+  options: {
+    ticketStatus?: number;
+    messageStatus?: number;
+    reply?: string[];
+    replies?: string[][];
+    usage?: boolean;
+    raw?: string;
+  } = {},
 ): Promise<FakeMatthew> {
   let sentFields: Record<string, string> = {};
+  let messages: string[] = [];
+  let threadIds: string[] = [];
+  let streamIndex = 0;
   let streamUrl = "";
 
   const server = createServer((req, res) => {
@@ -35,6 +48,11 @@ async function startFakeMatthew(
           res.end(JSON.stringify({ error: "bad token" }));
           return;
         }
+        if (options.messageStatus && options.messageStatus !== 200) {
+          res.writeHead(options.messageStatus, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "nope" }));
+          return;
+        }
         const chunks: Buffer[] = [];
         for await (const chunk of req) chunks.push(chunk as Buffer);
         const raw = Buffer.concat(chunks).toString("utf-8");
@@ -45,6 +63,8 @@ async function startFakeMatthew(
         )) {
           sentFields[match[1] as string] = match[2] as string;
         }
+        messages.push(sentFields.message ?? "");
+        threadIds.push(sentFields.thread_id ?? "");
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ new_thread: { thread_actual_id: "thread-1" } }));
         return;
@@ -75,7 +95,11 @@ async function startFakeMatthew(
           res.end(options.raw);
           return;
         }
-        for (const chunk of options.reply ?? ["Hel", "lo"]) {
+        const chunks = options.replies
+          ? (options.replies[streamIndex] ?? [])
+          : (options.reply ?? ["Hel", "lo"]);
+        streamIndex++;
+        for (const chunk of chunks) {
           res.write(`data: ${JSON.stringify({ message: chunk })}\n\n`);
         }
         if (options.usage) {
@@ -104,6 +128,8 @@ async function startFakeMatthew(
     base: `http://127.0.0.1:${port}`,
     sentMessage: () => sentFields.message ?? "",
     sentFields: () => sentFields,
+    messages: () => messages,
+    threadIds: () => threadIds,
     streamUrl: () => streamUrl,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
@@ -112,6 +138,18 @@ async function startFakeMatthew(
 function chat(fake: FakeMatthew, body: Parameters<typeof handleMatthewChat>[0]) {
   return handleMatthewChat(body, "access-token", "session-token", "aid-1", fake.base);
 }
+
+const READ_FILE: OpenAITool = {
+  type: "function",
+  function: {
+    name: "read_file",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+    },
+  },
+};
 
 test("streams a reply back in OpenAI SSE shape", async () => {
   const fake = await startFakeMatthew();
@@ -489,6 +527,7 @@ test("returns a tool call as OpenAI tool_calls when not streaming", async () => 
     assert.deepEqual(JSON.parse(choice.message.tool_calls![0]!.function.arguments), {
       path: "a.ts",
     });
+    assert.equal(fake.messages().length, 1);
   } finally {
     await fake.close();
   }
@@ -511,6 +550,7 @@ test("returns a tool call as tool_calls deltas when streaming", async () => {
     assert.match(text, /data: \[DONE\]/);
     // The raw protocol must not leak out as assistant content as well.
     assert.doesNotMatch(text, /"content":"<tool_call>/);
+    assert.equal(fake.messages().length, 1);
   } finally {
     await fake.close();
   }
@@ -554,6 +594,85 @@ test("neither injects nor parses when tool_choice is none", async () => {
     assert.doesNotMatch(fake.sentMessage(), /## Available tools/);
     assert.equal(body.choices[0]?.finish_reason, "stop");
     assert.equal(body.choices[0]?.message.tool_calls, undefined);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("retries once when a tool call does not match its schema", async () => {
+  const fake = await startFakeMatthew({
+    usage: true,
+    replies: [
+      ['<tool_call>{"name":"read_file","arguments":{}}</tool_call>'],
+      ['<tool_call>{"name":"read_file","arguments":{"path":"a.ts"}}</tool_call>'],
+    ],
+  });
+  try {
+    const body = (await chat(fake, {
+      model: "gpt-5.2",
+      stream: false,
+      messages: [{ role: "user", content: "read a.ts" }],
+      tools: [READ_FILE],
+    }).then((r) => r.json())) as {
+      choices: Array<{ message: { tool_calls?: Array<{ function: { arguments: string } }> } }>;
+      usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+    };
+
+    assert.deepEqual(JSON.parse(body.choices[0]!.message.tool_calls![0]!.function.arguments), {
+      path: "a.ts",
+    });
+    assert.deepEqual(body.usage, { prompt_tokens: 24, completion_tokens: 10, total_tokens: 34 });
+    assert.equal(fake.messages().length, 2);
+    assert.match(fake.messages()[1] ?? "", /missing required property "path"/);
+    assert.deepEqual(fake.threadIds(), ["newchat", "thread-1"]);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("retries a bad streaming tool call before emitting it", async () => {
+  const fake = await startFakeMatthew({
+    replies: [
+      ['<tool_call>{"name":"read_file","arguments":{}}</tool_call>'],
+      ['<tool_call>{"name":"read_file","arguments":{"path":"a.ts"}}</tool_call>'],
+    ],
+  });
+  try {
+    const text = await chat(fake, {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "read a.ts" }],
+      tools: [READ_FILE],
+    }).then((r) => r.text());
+
+    const calls = text
+      .split("\n")
+      .filter((line) => line.startsWith("data: {"))
+      .flatMap((line) => {
+        const chunk = JSON.parse(line.slice(6)) as {
+          choices?: Array<{ delta?: { tool_calls?: Array<{ function?: { arguments?: string } }> } }>;
+        };
+        return chunk.choices?.[0]?.delta?.tool_calls ?? [];
+      })
+      .map((call) => JSON.parse(call.function?.arguments ?? "{}"));
+
+    assert.deepEqual(calls, [{ path: "a.ts" }]);
+    assert.equal(fake.messages().length, 2);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("reports an expired session when the message post 401s", async () => {
+  const fake = await startFakeMatthew({ messageStatus: 401 });
+  try {
+    const response = await chat(fake, {
+      model: "gpt-5.2",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    const body = (await response.json()) as { error: { message: string } };
+
+    assert.equal(response.status, 401);
+    assert.match(body.error.message, /expired/);
   } finally {
     await fake.close();
   }

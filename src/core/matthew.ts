@@ -29,8 +29,12 @@ export function sseResponse(body: string | ReadableStream<Uint8Array>): Response
   });
 }
 
-/** Post one message as a fresh thread and return its id. */
-export async function openThread(
+/**
+ * Post one message into a thread and return the thread id to read.
+ * `"newchat"` starts a fresh thread; any other id continues an existing one.
+ */
+export async function sendMessage(
+  threadId: string,
   message: string,
   accessToken: string,
   sessionToken: string,
@@ -41,8 +45,8 @@ export async function openThread(
   const formData = new FormData();
   formData.append("token", sessionToken);
   formData.append("message", message);
-  formData.append("thread_id", "newchat");
-  formData.append("tid", "newchat");
+  formData.append("thread_id", threadId);
+  formData.append("tid", threadId);
   formData.append("aid", assistantId);
   formData.append("uname", clientName);
   formData.append("uname_th", clientName);
@@ -54,7 +58,17 @@ export async function openThread(
   });
 
   if (!msgResponse.ok) {
-    return { error: errorResponse(msgResponse.status, await msgResponse.text()) };
+    const detail = await msgResponse.text().catch(() => "");
+    const hint =
+      msgResponse.status === 401
+        ? " — your Matthew session has expired, log in again for a fresh token"
+        : "";
+    return {
+      error: errorResponse(
+        msgResponse.status,
+        `Matthew rejected the message (status ${msgResponse.status})${hint}: ${detail.slice(0, 300)}`,
+      ),
+    };
   }
 
   const msgText = await msgResponse.text();
@@ -66,12 +80,16 @@ export async function openThread(
   }
 
   const newThread = msgData.new_thread as Record<string, unknown> | undefined;
-  const threadId =
+  const returnedId =
     (newThread?.thread_actual_id as string) ||
     (msgData.thread_actual_id as string) ||
     (msgData.thread_id as string);
 
-  if (!threadId) {
+  // A follow-up reply need not name the thread again; the one we sent to is
+  // still the one to read.
+  const resolved = returnedId || (threadId === "newchat" ? undefined : threadId);
+
+  if (!resolved) {
     return {
       error: errorResponse(
         500,
@@ -80,7 +98,27 @@ export async function openThread(
     };
   }
 
-  return { threadId };
+  return { threadId: resolved };
+}
+
+/** Post one message as a fresh thread and return its id. */
+export function openThread(
+  message: string,
+  accessToken: string,
+  sessionToken: string,
+  assistantId: string,
+  apiBase: string,
+  clientName: string,
+): Promise<{ threadId: string } | { error: Response }> {
+  return sendMessage(
+    "newchat",
+    message,
+    accessToken,
+    sessionToken,
+    assistantId,
+    apiBase,
+    clientName,
+  );
 }
 
 /**

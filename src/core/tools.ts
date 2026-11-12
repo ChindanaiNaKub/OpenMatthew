@@ -66,6 +66,95 @@ export function toolNames(tools: OpenAITool[] | undefined): string[] {
     .filter((name): name is string => typeof name === "string" && name.length > 0);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function jsonType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+function typeName(expected: unknown): string {
+  if (Array.isArray(expected)) {
+    return expected.filter((type) => typeof type === "string").join(" or ");
+  }
+  return typeof expected === "string" ? expected : "the declared type";
+}
+
+function matchesType(value: unknown, expected: unknown): boolean {
+  const types = Array.isArray(expected) ? expected : [expected];
+  return types.some((type) => {
+    if (typeof type !== "string") return true;
+    if (type === "integer") return typeof value === "number" && Number.isInteger(value);
+    return jsonType(value) === type;
+  });
+}
+
+/**
+ * Check one call against the tool's parameter schema. Returns a problem
+ * description, or null when the arguments fit.
+ *
+ * shortcut: only the top level of each schema is checked; use a full JSON
+ * Schema validator if nested schemas become common.
+ */
+export function validateToolCall(call: OpenAIToolCall, tools: OpenAITool[]): string | null {
+  const tool = tools.find((candidate) => candidate?.function?.name === call.function.name);
+  if (!tool) return "is not one of the offered tools";
+
+  let args: unknown;
+  try {
+    args = JSON.parse(call.function.arguments) as unknown;
+  } catch {
+    return "has arguments that are not valid JSON";
+  }
+  if (!isRecord(args)) return "must pass a JSON object as arguments";
+
+  const schema = isRecord(tool.function.parameters) ? tool.function.parameters : {};
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  for (const key of required) {
+    if (typeof key === "string" && !(key in args)) return `is missing required property "${key}"`;
+  }
+
+  const properties = isRecord(schema.properties) ? schema.properties : {};
+  for (const [key, value] of Object.entries(args)) {
+    const property = properties[key];
+    if (!isRecord(property)) continue;
+
+    if (property.type !== undefined && !matchesType(value, property.type)) {
+      return `property "${key}" must be ${typeName(property.type)}, got ${jsonType(value)}`;
+    }
+
+    if (Array.isArray(property.enum) && !property.enum.some((option) => Object.is(option, value))) {
+      const options = property.enum.map((option) => JSON.stringify(option)).join(", ");
+      return `property "${key}" must be one of ${options}`;
+    }
+  }
+
+  return null;
+}
+
+/** Every problem across a reply's calls, each prefixed with the tool name. */
+export function validateToolCalls(calls: OpenAIToolCall[], tools: OpenAITool[]): string[] {
+  return calls.flatMap((call) => {
+    const problem = validateToolCall(call, tools);
+    return problem ? [`${call.function.name} ${problem}`] : [];
+  });
+}
+
+/** The one follow-up the model gets when its calls do not fit the schemas. */
+export function toolCallCorrection(issues: string[]): string {
+  return [
+    "# Invalid tool calls",
+    "",
+    "Your previous reply had these problems:",
+    ...issues.map((issue) => `- ${issue}`),
+    "",
+    "Reply again with corrected tool_call blocks. Match each tool's parameter schema, and add no prose.",
+  ].join("\n");
+}
+
 /**
  * Render the tool schemas and the output protocol as prompt text.
  *

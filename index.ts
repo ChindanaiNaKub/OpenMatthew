@@ -16,6 +16,9 @@ export {
   formatToolCall,
   toolCallDeltas,
   toolNames,
+  validateToolCall,
+  validateToolCalls,
+  toolCallCorrection,
 } from "./src/core/tools.js";
 export type {
   OpenAITool,
