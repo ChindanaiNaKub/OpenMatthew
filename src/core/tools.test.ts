@@ -4,10 +4,13 @@ import {
   buildToolInstructions,
   formatToolCall,
   parseToolCalls,
+  toolCallCorrection,
   toolCallDeltas,
   toolNames,
+  validateToolCall,
+  validateToolCalls,
 } from "./tools.js";
-import type { OpenAITool } from "./tools.js";
+import type { OpenAITool, OpenAIToolCall } from "./tools.js";
 
 const READ_FILE: OpenAITool = {
   type: "function",
@@ -174,4 +177,54 @@ test("round-trips a call back into the protocol", () => {
   const { toolCalls } = parseToolCalls(formatToolCall(call), ["run"]);
   assert.equal(toolCalls[0]?.function.name, "run");
   assert.deepEqual(JSON.parse(toolCalls[0]!.function.arguments), { cmd: "ls" });
+});
+
+function call(name: string, args: unknown): OpenAIToolCall {
+  return {
+    id: "call_1",
+    type: "function",
+    function: { name, arguments: JSON.stringify(args) },
+  };
+}
+
+test("accepts arguments that match the schema", () => {
+  assert.equal(validateToolCall(call("read_file", { path: "a.ts" }), [READ_FILE]), null);
+});
+
+test("reports a missing required property", () => {
+  assert.match(
+    validateToolCall(call("read_file", {}), [READ_FILE]) ?? "",
+    /missing required property "path"/,
+  );
+});
+
+test("reports a property of the wrong type", () => {
+  assert.match(
+    validateToolCall(call("read_file", { path: 3 }), [READ_FILE]) ?? "",
+    /"path" must be string, got number/,
+  );
+});
+
+test("does not reject properties the schema does not mention", () => {
+  assert.equal(validateToolCall(call("read_file", { path: "a.ts", extra: true }), [READ_FILE]), null);
+});
+
+test("reports a call to a tool that was not offered", () => {
+  assert.match(
+    validateToolCall(call("rm_rf", {}), [READ_FILE]) ?? "",
+    /not one of the offered tools/,
+  );
+});
+
+test("prefixes each issue with the tool name", () => {
+  assert.deepEqual(validateToolCalls([call("read_file", {})], [READ_FILE]), [
+    'read_file is missing required property "path"',
+  ]);
+});
+
+test("the correction message names the problem and asks for a fresh reply", () => {
+  const message = toolCallCorrection(['read_file is missing required property "path"']);
+
+  assert.match(message, /read_file is missing required property "path"/);
+  assert.match(message, /Reply again/);
 });

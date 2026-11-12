@@ -1,0 +1,35 @@
+name: API drift
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - id: check
+        run: npm run check-api
+      - name: Open an issue on drift
+        if: failure() && steps.check.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh issue list --state open --search "Matthew API drift detected in:title" --limit 1 | grep -q .; then
+            echo "An open drift issue already exists."
+            exit 0
+          fi
+          gh issue create \
+            --title "Matthew API drift detected" \
+            --body "The scheduled check against the Matthew frontend bundle failed. Run \`npm run check-api\` and read the failing expectations. Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

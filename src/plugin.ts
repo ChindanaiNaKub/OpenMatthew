@@ -5,12 +5,9 @@ import {
   MATTHEW_LOGIN_URL,
 } from "./constants.js";
 import { MATTHEW_MODELS } from "./core/models.js";
-import { encodeCredentials, fromUserBlob } from "./core/credentials.js";
+import { credentialExpiry, encodeCredentials, fromUserBlob } from "./core/credentials.js";
 import type { MatthewCredentials, MatthewUserBlob } from "./core/credentials.js";
-import {
-  wrapResponseWithUsageTracking,
-  fetchMatthewUsage,
-} from "./core/usage.js";
+import { fetchMatthewUsage } from "./core/usage.js";
 import { estimateTokens, checkBudget, formatBudget } from "./core/tokens.js";
 import { startMatthewServer } from "./server/index.js";
 
@@ -92,7 +89,7 @@ export default Plugin.define({
                 methodID: "login",
                 access: stored,
                 refresh: stored,
-                expires: Date.now() + 3600 * 1000,
+                expires: credentialExpiry(accessToken),
               } as Credential.OAuth;
             },
           };
@@ -143,14 +140,6 @@ export default Plugin.define({
             text: process.env.MATTHEW_SYSTEM_PROMPT ?? SYSTEM_PROMPT,
           });
         }
-      },
-      { providerID: MATTHEW_PROVIDER_ID },
-    );
-
-    await ctx.session.hook(
-      "http.response",
-      (event) => {
-        event.response = wrapResponseWithUsageTracking(event.response, event.model.id);
       },
       { providerID: MATTHEW_PROVIDER_ID },
     );

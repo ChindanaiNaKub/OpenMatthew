@@ -13,14 +13,17 @@ import {
   openReplyStream,
   openThread,
   readWholeReply,
+  sendMessage,
   sseResponse,
 } from "./matthew.js";
 import {
   buildToolInstructions,
   formatToolCall,
   parseToolCalls,
+  toolCallCorrection,
   toolCallDeltas,
   toolNames,
+  validateToolCalls,
 } from "./tools.js";
 import type { OpenAITool, OpenAIToolCall, ToolChoice } from "./tools.js";
 import type { UsageStats } from "./usage.js";
@@ -159,17 +162,17 @@ export async function handleMatthewChat(
   const messageBody = toolBlock
     ? `${toolBlock}\n\n# Conversation\n\n${conversation}`
     : conversation;
-  const allowedTools = toolBlock ? toolNames(body.tools) : null;
+  const tools = toolBlock ? (body.tools ?? []) : null;
 
   const opened = await openThread(messageBody, accessToken, sessionToken, assistantId, apiBase, clientName);
   if ("error" in opened) return opened.error;
   const threadId = opened.threadId;
 
   if (body.stream === false) {
-    return handleNonStreaming(threadId, accessToken, apiBase, body.model, allowedTools);
+    return handleNonStreaming(threadId, accessToken, sessionToken, assistantId, apiBase, body.model, tools);
   }
 
-  return handleStreaming(threadId, accessToken, apiBase, body.model, allowedTools);
+  return handleStreaming(threadId, accessToken, sessionToken, assistantId, apiBase, body.model, tools);
 }
 
 const DONE = "data: [DONE]\n\n";
@@ -192,16 +195,26 @@ function chunkWriter(model: string): (choices: unknown[], extra?: Record<string,
 export async function handleStreaming(
   threadId: string,
   accessToken: string,
+  sessionToken: string,
+  assistantId: string,
   apiBase: string,
   model: string,
-  allowedTools?: string[] | null,
+  tools?: OpenAITool[] | null,
 ): Promise<Response> {
   // A tool call is not recognisable until its closing tag arrives, so when
   // tools are in play the whole reply is read before anything is emitted.
   // Streaming content out and retracting it once a call turns up is not
   // expressible in OpenAI's wire format.
-  if (allowedTools) {
-    return streamBuffered(threadId, accessToken, apiBase, model, allowedTools);
+  if (tools && tools.length > 0) {
+    return streamBuffered(
+      threadId,
+      accessToken,
+      sessionToken,
+      assistantId,
+      apiBase,
+      model,
+      tools,
+    );
   }
 
   const opened = await openReplyStream(threadId, accessToken, apiBase);
@@ -256,18 +269,90 @@ export async function handleStreaming(
   return sseResponse(stream);
 }
 
+interface ParsedToolReply {
+  content: string | null;
+  toolCalls: OpenAIToolCall[];
+  usage: UsageStats | null;
+}
+
+/** A retry costs a second upstream call; report both. */
+function addUsage(first: UsageStats | null, second: UsageStats | null): UsageStats | null {
+  if (!first) return second;
+  if (!second) return first;
+  return {
+    prompt_tokens: first.prompt_tokens + second.prompt_tokens,
+    completion_tokens: first.completion_tokens + second.completion_tokens,
+    total_tokens: first.total_tokens + second.total_tokens,
+  };
+}
+
+/**
+ * Read a complete reply and, when tools were offered, check every call
+ * against its schema. A bad call gets one correction round in the same
+ * thread; the corrected reply is what the client sees.
+ */
+async function readToolReply(
+  threadId: string,
+  accessToken: string,
+  sessionToken: string,
+  assistantId: string,
+  apiBase: string,
+  tools: OpenAITool[] | null,
+): Promise<ParsedToolReply | { error: Response }> {
+  const offered = tools ?? [];
+  const allowed = offered.length > 0 ? toolNames(offered) : null;
+
+  const read = async (id: string): Promise<ParsedToolReply | { error: Response }> => {
+    const reply = await readWholeReply(id, accessToken, apiBase);
+    if ("error" in reply) return reply;
+    if (!allowed) return { content: reply.text, toolCalls: [], usage: reply.usage };
+    return { ...parseToolCalls(reply.text, allowed), usage: reply.usage };
+  };
+
+  const first = await read(threadId);
+  if ("error" in first || !allowed) return first;
+
+  const issues = validateToolCalls(first.toolCalls, offered);
+  if (issues.length === 0) return first;
+
+  const correction = await sendMessage(
+    threadId,
+    toolCallCorrection(issues),
+    accessToken,
+    sessionToken,
+    assistantId,
+    apiBase,
+    CLIENT_NAME,
+  );
+  // If the correction cannot be sent, the first reply is still the best
+  // answer available; the client will report the tool error.
+  if ("error" in correction) return first;
+
+  const second = await read(correction.threadId);
+  return "error" in second ? first : { ...second, usage: addUsage(first.usage, second.usage) };
+}
+
 /** Emit an already-complete reply as a short OpenAI SSE stream. */
 async function streamBuffered(
   threadId: string,
   accessToken: string,
+  sessionToken: string,
+  assistantId: string,
   apiBase: string,
   model: string,
-  allowedTools: string[],
+  tools: OpenAITool[],
 ): Promise<Response> {
-  const reply = await readWholeReply(threadId, accessToken, apiBase);
+  const reply = await readToolReply(
+    threadId,
+    accessToken,
+    sessionToken,
+    assistantId,
+    apiBase,
+    tools,
+  );
   if ("error" in reply) return reply.error;
 
-  const { content, toolCalls } = parseToolCalls(reply.text, allowedTools);
+  const { content, toolCalls } = reply;
   const chunk = chunkWriter(model);
 
   const parts: string[] = [chunk([{ delta: { role: "assistant" }, finish_reason: null, index: 0 }])];
@@ -294,21 +379,28 @@ async function streamBuffered(
 export async function handleNonStreaming(
   threadId: string,
   accessToken: string,
+  sessionToken: string,
+  assistantId: string,
   apiBase: string,
   model: string,
-  allowedTools?: string[] | null,
+  tools?: OpenAITool[] | null,
 ): Promise<Response> {
-  const reply = await readWholeReply(threadId, accessToken, apiBase);
+  const reply = await readToolReply(
+    threadId,
+    accessToken,
+    sessionToken,
+    assistantId,
+    apiBase,
+    tools ?? null,
+  );
   if ("error" in reply) return reply.error;
 
-  const { content, toolCalls } = allowedTools
-    ? parseToolCalls(reply.text, allowedTools)
-    : { content: reply.text, toolCalls: [] as OpenAIToolCall[] };
-
+  const { content, toolCalls, usage } = reply;
   const message: Record<string, unknown> = { role: "assistant", content };
   if (toolCalls.length > 0) message.tool_calls = toolCalls;
 
-  const usage: UsageStats = reply.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  const reportedUsage: UsageStats =
+    usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
 
   return jsonResponse(200, {
     id: newCompletionId(),
@@ -320,6 +412,6 @@ export async function handleNonStreaming(
       finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop",
       index: 0,
     }],
-    usage,
+    usage: reportedUsage,
   });
 }

@@ -28,6 +28,32 @@ export function encodeCredentials(credentials: MatthewCredentials): string {
   return Buffer.from(JSON.stringify(credentials), "utf-8").toString("base64");
 }
 
+const FALLBACK_LIFETIME_MS = 3600 * 1000;
+
+/**
+ * When the access token itself expires, in epoch milliseconds.
+ *
+ * Matthew has no refresh endpoint, so this only tells the host when to ask
+ * for a fresh login. The token is a JWT in practice; reading its `exp` claim
+ * beats inventing a lifetime. Opaque tokens keep the one-hour fallback.
+ */
+export function credentialExpiry(accessToken: string): number {
+  const payload = accessToken.split(".")[1];
+  if (payload) {
+    try {
+      const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf-8")) as {
+        exp?: unknown;
+      };
+      if (typeof claims.exp === "number" && Number.isFinite(claims.exp)) {
+        return claims.exp * 1000;
+      }
+    } catch {
+      // Not a JWT; use the fallback.
+    }
+  }
+  return Date.now() + FALLBACK_LIFETIME_MS;
+}
+
 /** Returns null when the value is not a credentials blob. */
 export function decodeCredentials(token: string): MatthewCredentials | null {
   try {

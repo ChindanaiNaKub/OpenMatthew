@@ -16,6 +16,9 @@ export {
   formatToolCall,
   toolCallDeltas,
   toolNames,
+  validateToolCall,
+  validateToolCalls,
+  toolCallCorrection,
 } from "./src/core/tools.js";
 export type {
   OpenAITool,
@@ -27,8 +30,8 @@ export type {
 export { MATTHEW_MODELS, toOpenAIModelList } from "./src/core/models.js";
 export type { MatthewModel } from "./src/core/models.js";
 
-export { printUsageSummary, fetchMatthewUsage } from "./src/core/usage.js";
-export type { UsageStats, StoredUsage } from "./src/core/usage.js";
+export { printUsageSummary, fetchMatthewUsage, usageSummary } from "./src/core/usage.js";
+export type { UsageStats, StoredUsage, UsageSummary } from "./src/core/usage.js";
 
 export {
   estimateTokens,

@@ -8,6 +8,7 @@ import type { MatthewCredentials } from "../core/credentials.js";
 import { handleMatthewImages } from "../core/images.js";
 import type { OpenAIImageRequest } from "../core/images.js";
 import { toOpenAIModelList } from "../core/models.js";
+import { usageSummary, wrapResponseWithUsageTracking } from "../core/usage.js";
 
 /**
  * Standalone OpenAI-compatible server over the Matthew core.
@@ -124,6 +125,17 @@ export function createMatthewServer(options: ServerOptions = {}): Server {
         return;
       }
 
+      // Totals are per machine, not per credential. A key is still required
+      // so the permissive CORS policy cannot expose them to any website.
+      if (req.method === "GET" && path === "/usage") {
+        if (!parseCredentials(req.headers.authorization)) {
+          sendJson(res, 401, { error: { message: "Missing or invalid Authorization header" } });
+          return;
+        }
+        sendJson(res, 200, { object: "usage", ...(await usageSummary()) });
+        return;
+      }
+
       const isChatCompletions = path === "/chat/completions";
       const isImageGenerations = path === "/images/generations";
 
@@ -151,7 +163,12 @@ export function createMatthewServer(options: ServerOptions = {}): Server {
         const webResponse = isImageGenerations
           ? await handleMatthewImages(body, credentials.accessToken, credentials.sessionToken, assistantId, apiBase)
           : await handleMatthewChat(body, credentials.accessToken, credentials.sessionToken, assistantId, apiBase);
-        await pipeWebResponse(webResponse, res);
+        // Track at the one boundary every mode goes through, so the
+        // standalone server and the OpenCode plugin report the same totals.
+        const tracked = isImageGenerations
+          ? webResponse
+          : wrapResponseWithUsageTracking(webResponse, body.model);
+        await pipeWebResponse(tracked, res);
       } catch (err) {
         sendJson(res, 500, {
           error: { message: err instanceof Error ? err.message : "Unknown error" },
