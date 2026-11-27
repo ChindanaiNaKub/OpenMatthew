@@ -20,6 +20,19 @@ test("round-trips the credentials blob the bearer carries", () => {
   });
 });
 
+test("reads the plain JSON blob the host sends as the API key", () => {
+  assert.deepEqual(
+    decodeCredentials(
+      JSON.stringify({
+        accessToken: "access",
+        sessionToken: "session",
+        defaultAssistantId: "aid-1",
+      }),
+    ),
+    { accessToken: "access", sessionToken: "session", assistantId: "aid-1" },
+  );
+});
+
 test("reads the expiry from a JWT access token", () => {
   const payload = Buffer.from(JSON.stringify({ exp: 1_800_000_000 })).toString("base64url");
   const token = `header.${payload}.signature`;
