@@ -54,19 +54,34 @@ export function credentialExpiry(accessToken: string): number {
   return Date.now() + FALLBACK_LIFETIME_MS;
 }
 
-/** Returns null when the value is not a credentials blob. */
+/**
+ * Returns null when the value is not a credentials blob.
+ *
+ * The bearer reaches us two ways: base64 (what the plugin's hook sends) and
+ * plain JSON (what the host sends when it uses the stored credential as its
+ * API key and overwrites the hook's header). Both have to decode.
+ */
 export function decodeCredentials(token: string): MatthewCredentials | null {
+  return (
+    readBlob(Buffer.from(token, "base64").toString("utf-8")) ?? readBlob(token)
+  );
+}
+
+type CredentialBlob = Partial<MatthewCredentials> & { defaultAssistantId?: string };
+
+function readBlob(text: string): MatthewCredentials | null {
   try {
-    const parsed = JSON.parse(Buffer.from(token, "base64").toString("utf-8")) as Partial<MatthewCredentials>;
+    const parsed = JSON.parse(text) as CredentialBlob;
     if (parsed.accessToken && parsed.sessionToken) {
       return {
         accessToken: parsed.accessToken,
         sessionToken: parsed.sessionToken,
-        assistantId: parsed.assistantId,
+        // The plugin stores the id under the host's name for it.
+        assistantId: parsed.assistantId ?? parsed.defaultAssistantId,
       };
     }
   } catch {
-    // not a base64-encoded credentials blob
+    // not a credentials blob
   }
   return null;
 }
